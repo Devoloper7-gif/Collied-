@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.7.1';
+const VERSION = 'v1.7.2';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -1005,7 +1005,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
 // ================= v1.7 Android: system media notification, lock screen, headset buttons =================
 (function(){
   if (!NATIVE) return;
-  let MC = null; try { MC = Capacitor.registerPlugin('MediaControl'); } catch (e) { return; }
+  let MC = null, mcErr = ''; try { MC = Capacitor.registerPlugin('MediaControl'); } catch (e) { window.__mc = { fail: String(e) }; return; }
   let lastKey = '', asked = false;
   const keyOf = t => t.id + ':' + (t.art ? t.art.length : 0);
   function push(){
@@ -1013,10 +1013,11 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     const o = { playing: !audio.paused, position: audio.currentTime || 0, duration: isFinite(audio.duration) ? audio.duration : (t.dur || 0), speed: prefs.speed || 1, shuffle: !!shuffle, repeat: repeat | 0 };
     const k = keyOf(t);
     if (k !== lastKey){ lastKey = k; o.meta = true; o.title = t.title || ''; o.artist = t.artist || ''; o.album = t.album || ''; o.art = t.art || ''; }
-    try { MC.update(o).catch(() => {}); } catch (e) {}
+    try { MC.update(o).catch(e => { mcErr = 'update: ' + String((e && e.message) || e); lastKey = ''; }); } catch (e) { mcErr = 'update: ' + e; lastKey = ''; }
   }
+  window.__mc = { MC, push: force => { if (force) lastKey = ''; push(); }, err: () => mcErr };
   ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata', 'durationchange'].forEach(ev => audio.addEventListener(ev, push));
-  audio.addEventListener('play', () => { if (!asked){ asked = true; try { MC.requestNotif().catch(() => {}); } catch (e) {} } });
+  audio.addEventListener('play', () => { if (!asked){ asked = true; try { MC.requestNotif().catch(e => { mcErr = 'permission: ' + String((e && e.message) || e); }); } catch (e) {} } });
   audio.addEventListener('timeupdate', () => { const t = queue[qi]; if (t && keyOf(t) !== lastKey) push(); });   // cover arrived later
   $('#f-shuf').addEventListener('click', () => setTimeout(push, 30));
   $('#f-rep').addEventListener('click', () => setTimeout(push, 30));
@@ -1045,4 +1046,29 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   };
   new MutationObserver(sync).observe(full, { attributes: true, attributeFilter: ['class', 'hidden'] });
   const art = $('#f-art'); art.addEventListener('animationend', () => art.classList.remove('swap', 'dtap'));
+})();
+
+// ================= v1.7.2 media notification check (Backup tab) =================
+(function(){
+  const btn = $('#mcbtn'), out = $('#mcinfo'); if (!btn) return;
+  btn.onclick = async () => {
+    const L = []; out.textContent = 'Checking...';
+    L.push('Native app: ' + (NATIVE ? 'yes' : 'no (this is the browser version, no system notification here)'));
+    const m = window.__mc;
+    if (!NATIVE){ out.textContent = L.join('\n'); return; }
+    if (!m || m.fail || !m.MC){ L.push('Plugin: NOT reachable ' + ((m && m.fail) || '')); out.textContent = L.join('\n'); return; }
+    try { if (queue[qi]){ m.push(true); await new Promise(r => setTimeout(r, 900)); } else L.push('Play a song first, then check again.'); } catch (e) {}
+    try {
+      const s = await m.MC.status();
+      L.push('Plugin: reachable');
+      L.push('Android: ' + s.sdk + ' | notifications allowed: ' + (s.notifAllowed ? 'yes' : 'NO'));
+      L.push('Channel importance: ' + (s.channel === undefined ? '-' : s.channel) + ' (0 = blocked)');
+      L.push('Updates received: ' + s.updates + ' | service running: ' + (s.serviceUp ? 'yes' : 'NO') + ' | refreshes: ' + s.refreshes);
+      L.push('Notification posted: ' + (s.posted === undefined ? '-' : (s.posted ? 'yes' : 'NO')) + ' | cover in it: ' + (s.hasArt ? 'yes' : 'no'));
+      L.push('Headset keys received: ' + s.keys + ' | sent to the app: ' + s.emitted);
+      if (s.lastError) L.push('Native error: ' + s.lastError);
+    } catch (e) { L.push('Plugin call failed: ' + String((e && e.message) || e)); }
+    if (m.err()) L.push('App error: ' + m.err());
+    out.textContent = L.join('\n');
+  };
 })();
