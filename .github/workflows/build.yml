@@ -53,6 +53,10 @@ jobs:
           package com.collied.player;
 
           import android.Manifest;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.service.notification.StatusBarNotification;
+          import androidx.core.app.NotificationManagerCompat;
           import android.content.Context;
           import android.content.Intent;
           import android.graphics.Bitmap;
@@ -80,6 +84,7 @@ jobs:
           public class MediaControlPlugin extends Plugin {
 
               static MediaControlPlugin inst;
+              static int emitted = 0;
 
               @Override
               public void load() {
@@ -91,6 +96,7 @@ jobs:
                   MediaControlPlugin p = inst;
                   if (p == null) return;
                   JSObject o = new JSObject();
+                  emitted++;
                   o.put("name", name);
                   if (position >= 0) o.put("position", position);
                   p.notifyListeners("action", o);
@@ -114,8 +120,42 @@ jobs:
                   call.resolve();
               }
 
+              /** Numbers for the in-app "Check media notification" button */
+              @PluginMethod
+              public void status(PluginCall call) {
+                  JSObject o = new JSObject();
+                  Context c = getContext();
+                  try {
+                      o.put("sdk", Build.VERSION.SDK_INT);
+                      o.put("notifAllowed", NotificationManagerCompat.from(c).areNotificationsEnabled());
+                      o.put("serviceUp", MediaService.instance != null);
+                      o.put("playing", MediaService.playing);
+                      o.put("title", MediaService.title);
+                      o.put("hasArt", MediaService.art != null);
+                      o.put("updates", MediaService.updates);
+                      o.put("refreshes", MediaService.refreshes);
+                      o.put("keys", MediaService.keys);
+                      o.put("emitted", emitted);
+                      o.put("lastError", MediaService.lastError);
+                      NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+                      if (Build.VERSION.SDK_INT >= 23) {
+                          boolean posted = false;
+                          for (StatusBarNotification s : nm.getActiveNotifications()) if (s.getId() == MediaService.NID) posted = true;
+                          o.put("posted", posted);
+                      }
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          NotificationChannel ch = nm.getNotificationChannel(MediaService.CH);
+                          o.put("channel", ch == null ? -1 : ch.getImportance());
+                      }
+                  } catch (Exception e) {
+                      o.put("lastError", "status: " + e);
+                  }
+                  call.resolve(o);
+              }
+
               @PluginMethod
               public void update(PluginCall call) {
+                  MediaService.updates++;
                   Boolean meta = call.getBoolean("meta", false);
                   if (meta != null && meta) {
                       MediaService.title = call.getString("title", "");
@@ -151,7 +191,7 @@ jobs:
                           i.setAction("collied.update");
                           ContextCompat.startForegroundService(c, i);
                       } catch (Exception e) {
-                          // app is in the background and Android refuses a fresh start; the next update from the foreground will start it
+                          MediaService.lastError = "start: " + e;
                       }
                   }
                   call.resolve();
@@ -179,6 +219,7 @@ jobs:
           import android.app.PendingIntent;
           import android.app.Service;
           import android.content.BroadcastReceiver;
+          import android.content.ComponentName;
           import android.content.Context;
           import android.content.Intent;
           import android.content.IntentFilter;
@@ -197,6 +238,7 @@ jobs:
           import androidx.core.app.NotificationCompat;
           import androidx.core.app.ServiceCompat;
           import androidx.core.content.ContextCompat;
+          import androidx.media.session.MediaButtonReceiver;
 
           public class MediaService extends Service {
 
@@ -210,6 +252,8 @@ jobs:
               static boolean playing = false, shuffle = false;
               static float speed = 1f;
               static int repeat = 0; // 0 off, 1 all, 2 one
+              static String lastError = "";
+              static int refreshes = 0, keys = 0, updates = 0;
 
               private MediaSessionCompat session;
               private NotificationManager nm;
@@ -257,7 +301,18 @@ jobs:
                       nm.createNotificationChannel(ch);
                   }
                   session = new MediaSessionCompat(this, "Collied");
+                  session.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
+                  try {
+                      Intent mbi = new Intent(Intent.ACTION_MEDIA_BUTTON);
+                      mbi.setComponent(new ComponentName(this, MediaButtonReceiver.class));
+                      session.setMediaButtonReceiver(PendingIntent.getBroadcast(this, 0, mbi, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+                  } catch (Exception e) { lastError = "mbr: " + e; }
                   session.setCallback(new MediaSessionCompat.Callback() {
+                      @Override
+                      public boolean onMediaButtonEvent(Intent mediaButtonEvent) {
+                          keys++;   // counted so the in-app check can show that headset keys arrive
+                          return super.onMediaButtonEvent(mediaButtonEvent);
+                      }
                       @Override public void onPlay() { MediaControlPlugin.emit("play"); }
                       @Override public void onPause() { MediaControlPlugin.emit("pause"); }
                       @Override public void onSkipToNext() { MediaControlPlugin.emit("next"); }
@@ -276,6 +331,15 @@ jobs:
               @Override
               public int onStartCommand(Intent intent, int flags, int startId) {
                   String a = intent == null ? null : intent.getAction();
+                  if (Intent.ACTION_MEDIA_BUTTON.equals(a)) {
+                      refresh();
+                      try { MediaButtonReceiver.handleIntent(session, intent); } catch (Exception e) { lastError = "key: " + e; }
+                      if (MediaControlPlugin.inst == null) {   // app was closed: nobody to play the song, do not leave an empty notification
+                          try { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE); } catch (Exception ignored) { }
+                          stopSelf();
+                      }
+                      return START_NOT_STICKY;
+                  }
                   if (a != null) {
                       if (a.equals("collied.toggle")) MediaControlPlugin.emit(playing ? "pause" : "play");
                       else if (a.equals("collied.next")) MediaControlPlugin.emit("next");
@@ -289,6 +353,7 @@ jobs:
 
               void refresh() {
                   if (session == null) return;
+                  refreshes++;
                   MediaMetadataCompat.Builder mb = new MediaMetadataCompat.Builder()
                       .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
                       .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
@@ -333,7 +398,8 @@ jobs:
                           if (!resumeOnGain) focus(false);
                       }
                   } catch (Exception e) {
-                      try { nm.notify(NID, n); } catch (Exception ignored) { }
+                      lastError = "fg: " + e;
+                      try { nm.notify(NID, n); } catch (Exception e2) { lastError += " | notify: " + e2; }
                   }
               }
 
@@ -505,6 +571,7 @@ jobs:
                    '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
                    '    <uses-permission android:name="android.permission.WAKE_LOCK" />\n    ')
           svc = '<service android:name=".MediaService" android:exported="false" android:foregroundServiceType="mediaPlayback" />\n    '
+          svc += '<receiver android:name="androidx.media.session.MediaButtonReceiver" android:exported="true"><intent-filter><action android:name="android.intent.action.MEDIA_BUTTON" /></intent-filter></receiver>\n    '
           if '<application' not in m or '</application>' not in m: print('manifest unexpected'); sys.exit(1)
           m = m.replace('<application', perms + '<application', 1).replace('</application>', svc + '</application>', 1)
           open(mp, 'w').write(m)
