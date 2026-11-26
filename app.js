@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.7.2';
+const VERSION = 'v1.7.3';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -828,7 +828,11 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   $('#autosw').checked = !!prefs.auto; prefs.speed = rateOf(queue[qi]); applySpeed(); paintInstall(); renderList(); info();
   if (prefs.auto) setTimeout(() => autoFill(false), 2500);
   window.addEventListener('online', () => { if (prefs.auto) autoFill(false); });
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  const isApp = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
+  if (isApp && 'serviceWorker' in navigator){   // inside the APK every file is bundled, so an old cached copy must never win over it
+    navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(() => {});
+    if (window.caches) caches.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(() => {});
+  } else if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
   window.__collied = { audio, next, get tracks(){ return tracks; }, compute, get local(){ return local; }, get pls(){ return pls; }, get favs(){ return favs; }, get lyr(){ return lyr; }, parseLrc, playList, onlineCover };
 })();
 
@@ -1017,7 +1021,10 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   }
   window.__mc = { MC, push: force => { if (force) lastKey = ''; push(); }, err: () => mcErr };
   ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata', 'durationchange'].forEach(ev => audio.addEventListener(ev, push));
-  audio.addEventListener('play', () => { if (!asked){ asked = true; try { MC.requestNotif().catch(e => { mcErr = 'permission: ' + String((e && e.message) || e); }); } catch (e) {} } });
+  audio.addEventListener('play', () => { if (!asked){ asked = true; try { MC.requestNotif().catch(e => { mcErr = 'permission: ' + String((e && e.message) || e); }); } catch (e) {}
+    setTimeout(async () => {   // tell the truth on screen if the system notification did not come up
+      try { const s = await MC.status(); if (!s.serviceUp || s.posted === false || s.lastError) toast('Media notification problem: ' + (s.lastError || (!s.serviceUp ? 'service not running' : 'not posted')) + '. See Backup > Media notification.'); } catch (e) { toast('Media plugin not reachable. See Backup > Media notification.'); }
+    }, 4000); } });
   audio.addEventListener('timeupdate', () => { const t = queue[qi]; if (t && keyOf(t) !== lastKey) push(); });   // cover arrived later
   $('#f-shuf').addEventListener('click', () => setTimeout(push, 30));
   $('#f-rep').addEventListener('click', () => setTimeout(push, 30));
