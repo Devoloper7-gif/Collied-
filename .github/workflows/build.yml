@@ -46,6 +46,407 @@ jobs:
           npm install
           npx cap add android
 
+      - name: Write native Android files
+        run: |
+          mkdir -p native/res/drawable
+          cat > native/MediaControlPlugin.java <<'NATIVEEOF'
+          package com.collied.player;
+
+          import android.Manifest;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.util.Base64;
+
+          import androidx.core.content.ContextCompat;
+
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.PermissionState;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.getcapacitor.annotation.Permission;
+          import com.getcapacitor.annotation.PermissionCallback;
+
+          @CapacitorPlugin(
+              name = "MediaControl",
+              permissions = { @Permission(strings = { Manifest.permission.POST_NOTIFICATIONS }, alias = "notifications") }
+          )
+          public class MediaControlPlugin extends Plugin {
+
+              static MediaControlPlugin inst;
+
+              @Override
+              public void load() {
+                  inst = this;
+              }
+
+              /** Sends a button press (play, pause, next, prev, seek, shuffle, repeat, stop) to app.js */
+              static void emit(String name, double position) {
+                  MediaControlPlugin p = inst;
+                  if (p == null) return;
+                  JSObject o = new JSObject();
+                  o.put("name", name);
+                  if (position >= 0) o.put("position", position);
+                  p.notifyListeners("action", o);
+              }
+
+              static void emit(String name) {
+                  emit(name, -1);
+              }
+
+              @PluginMethod
+              public void requestNotif(PluginCall call) {
+                  if (Build.VERSION.SDK_INT >= 33 && getPermissionState("notifications") != PermissionState.GRANTED) {
+                      requestPermissionForAlias("notifications", call, "permDone");
+                  } else {
+                      call.resolve();
+                  }
+              }
+
+              @PermissionCallback
+              private void permDone(PluginCall call) {
+                  call.resolve();
+              }
+
+              @PluginMethod
+              public void update(PluginCall call) {
+                  Boolean meta = call.getBoolean("meta", false);
+                  if (meta != null && meta) {
+                      MediaService.title = call.getString("title", "");
+                      MediaService.artist = call.getString("artist", "");
+                      MediaService.album = call.getString("album", "");
+                      MediaService.art = decode(call.getString("art", ""));
+                  }
+                  Double d = call.getDouble("duration", 0.0);
+                  Double p = call.getDouble("position", 0.0);
+                  Double s = call.getDouble("speed", 1.0);
+                  Boolean pl = call.getBoolean("playing", false);
+                  Boolean sh = call.getBoolean("shuffle", false);
+                  Integer rp = call.getInt("repeat", 0);
+                  MediaService.durMs = (long) ((d == null ? 0 : d) * 1000);
+                  MediaService.posMs = (long) ((p == null ? 0 : p) * 1000);
+                  MediaService.speed = (float) (s == null ? 1.0 : s);
+                  MediaService.playing = pl != null && pl;
+                  MediaService.shuffle = sh != null && sh;
+                  MediaService.repeat = rp == null ? 0 : rp;
+
+                  final MediaService svc = MediaService.instance;
+                  if (svc != null) {
+                      new Handler(Looper.getMainLooper()).post(new Runnable() {
+                          @Override
+                          public void run() {
+                              svc.refresh();
+                          }
+                      });
+                  } else {
+                      try {
+                          Context c = getContext();
+                          Intent i = new Intent(c, MediaService.class);
+                          i.setAction("collied.update");
+                          ContextCompat.startForegroundService(c, i);
+                      } catch (Exception e) {
+                          // app is in the background and Android refuses a fresh start; the next update from the foreground will start it
+                      }
+                  }
+                  call.resolve();
+              }
+
+              private static Bitmap decode(String data) {
+                  try {
+                      if (data == null || data.length() < 40) return null;
+                      int k = data.indexOf("base64,");
+                      String b = k >= 0 ? data.substring(k + 7) : data;
+                      byte[] bytes = Base64.decode(b, Base64.DEFAULT);
+                      return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                  } catch (Exception e) {
+                      return null;
+                  }
+              }
+          }
+          NATIVEEOF
+          cat > native/MediaService.java <<'NATIVEEOF'
+          package com.collied.player;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.IntentFilter;
+          import android.content.pm.ServiceInfo;
+          import android.graphics.Bitmap;
+          import android.media.AudioAttributes;
+          import android.media.AudioFocusRequest;
+          import android.media.AudioManager;
+          import android.os.Build;
+          import android.os.IBinder;
+          import android.os.SystemClock;
+          import android.support.v4.media.MediaMetadataCompat;
+          import android.support.v4.media.session.MediaSessionCompat;
+          import android.support.v4.media.session.PlaybackStateCompat;
+
+          import androidx.core.app.NotificationCompat;
+          import androidx.core.app.ServiceCompat;
+          import androidx.core.content.ContextCompat;
+
+          public class MediaService extends Service {
+
+              static final String CH = "collied_playback";
+              static final int NID = 7;
+
+              static MediaService instance;
+              static String title = "", artist = "", album = "";
+              static Bitmap art;
+              static long durMs = 0, posMs = 0;
+              static boolean playing = false, shuffle = false;
+              static float speed = 1f;
+              static int repeat = 0; // 0 off, 1 all, 2 one
+
+              private MediaSessionCompat session;
+              private NotificationManager nm;
+              private AudioManager am;
+              private AudioFocusRequest focusReq;
+              private boolean fg = false, needFg = true, resumeOnGain = false;
+
+              private final BroadcastReceiver noisy = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context c, Intent i) {
+                      if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(i.getAction())) MediaControlPlugin.emit("pause");
+                  }
+              };
+
+              private final AudioManager.OnAudioFocusChangeListener focusL = new AudioManager.OnAudioFocusChangeListener() {
+                  @Override
+                  public void onAudioFocusChange(int change) {
+                      if (change == AudioManager.AUDIOFOCUS_LOSS) {
+                          resumeOnGain = false;
+                          MediaControlPlugin.emit("pause");
+                      } else if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+                          if (playing) {
+                              resumeOnGain = true;
+                              MediaControlPlugin.emit("pause");
+                          }
+                      } else if (change == AudioManager.AUDIOFOCUS_GAIN) {
+                          if (resumeOnGain) {
+                              resumeOnGain = false;
+                              MediaControlPlugin.emit("play");
+                          }
+                      }
+                  }
+              };
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  instance = this;
+                  nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                  am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      NotificationChannel ch = new NotificationChannel(CH, "Playback", NotificationManager.IMPORTANCE_LOW);
+                      ch.setShowBadge(false);
+                      ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+                      nm.createNotificationChannel(ch);
+                  }
+                  session = new MediaSessionCompat(this, "Collied");
+                  session.setCallback(new MediaSessionCompat.Callback() {
+                      @Override public void onPlay() { MediaControlPlugin.emit("play"); }
+                      @Override public void onPause() { MediaControlPlugin.emit("pause"); }
+                      @Override public void onSkipToNext() { MediaControlPlugin.emit("next"); }
+                      @Override public void onSkipToPrevious() { MediaControlPlugin.emit("prev"); }
+                      @Override public void onStop() { MediaControlPlugin.emit("pause"); }
+                      @Override public void onSeekTo(long pos) { MediaControlPlugin.emit("seek", pos / 1000.0); }
+                      @Override public void onCustomAction(String action, android.os.Bundle extras) {
+                          if ("shuffle".equals(action)) MediaControlPlugin.emit("shuffle");
+                          else if ("repeat".equals(action)) MediaControlPlugin.emit("repeat");
+                      }
+                  });
+                  session.setActive(true);
+                  ContextCompat.registerReceiver(this, noisy, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), ContextCompat.RECEIVER_NOT_EXPORTED);
+              }
+
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  String a = intent == null ? null : intent.getAction();
+                  if (a != null) {
+                      if (a.equals("collied.toggle")) MediaControlPlugin.emit(playing ? "pause" : "play");
+                      else if (a.equals("collied.next")) MediaControlPlugin.emit("next");
+                      else if (a.equals("collied.prev")) MediaControlPlugin.emit("prev");
+                      else if (a.equals("collied.shuffle")) MediaControlPlugin.emit("shuffle");
+                      else if (a.equals("collied.repeat")) MediaControlPlugin.emit("repeat");
+                  }
+                  refresh();
+                  return START_NOT_STICKY;
+              }
+
+              void refresh() {
+                  if (session == null) return;
+                  MediaMetadataCompat.Builder mb = new MediaMetadataCompat.Builder()
+                      .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
+                      .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
+                      .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
+                      .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durMs);
+                  if (art != null) {
+                      mb.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, art);
+                      mb.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, art);
+                  }
+                  session.setMetadata(mb.build());
+
+                  long actions = PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_PLAY_PAUSE
+                      | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+                      | PlaybackStateCompat.ACTION_SEEK_TO | PlaybackStateCompat.ACTION_STOP;
+                  PlaybackStateCompat.Builder pb = new PlaybackStateCompat.Builder()
+                      .setActions(actions)
+                      .setState(playing ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED,
+                          posMs, playing ? speed : 0f, SystemClock.elapsedRealtime());
+                  pb.addCustomAction(new PlaybackStateCompat.CustomAction.Builder("shuffle",
+                      shuffle ? "Shuffle on" : "Shuffle off", shuffle ? R.drawable.ic_c_shuffle_on : R.drawable.ic_c_shuffle).build());
+                  pb.addCustomAction(new PlaybackStateCompat.CustomAction.Builder("repeat",
+                      repeat == 0 ? "Repeat off" : (repeat == 1 ? "Repeat all" : "Repeat one"),
+                      repeat == 0 ? R.drawable.ic_c_repeat : (repeat == 1 ? R.drawable.ic_c_repeat_on : R.drawable.ic_c_repeat_one)).build());
+                  session.setPlaybackState(pb.build());
+
+                  Notification n = buildNotification();
+                  try {
+                      if (playing || needFg) {
+                          int type = Build.VERSION.SDK_INT >= 29 ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK : 0;
+                          ServiceCompat.startForeground(this, NID, n, type);
+                          fg = true;
+                          needFg = false;
+                      }
+                      if (playing) {
+                          focus(true);
+                      } else {
+                          if (fg) {
+                              ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH);
+                              fg = false;
+                          }
+                          nm.notify(NID, n);
+                          if (!resumeOnGain) focus(false);
+                      }
+                  } catch (Exception e) {
+                      try { nm.notify(NID, n); } catch (Exception ignored) { }
+                  }
+              }
+
+              private PendingIntent act(String name, int code) {
+                  Intent i = new Intent(this, MediaService.class);
+                  i.setAction(name);
+                  return PendingIntent.getService(this, code, i, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+              }
+
+              private Notification buildNotification() {
+                  Intent open = new Intent(this, MainActivity.class);
+                  open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                  PendingIntent content = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+                  NotificationCompat.Builder b = new NotificationCompat.Builder(this, CH)
+                      .setSmallIcon(R.drawable.ic_c_stat)
+                      .setContentTitle(title)
+                      .setContentText(artist)
+                      .setSubText(album)
+                      .setContentIntent(content)
+                      .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                      .setOnlyAlertOnce(true)
+                      .setShowWhen(false)
+                      .setOngoing(playing)
+                      .setCategory(NotificationCompat.CATEGORY_TRANSPORT);
+                  if (art != null) b.setLargeIcon(art);
+                  b.addAction(shuffle ? R.drawable.ic_c_shuffle_on : R.drawable.ic_c_shuffle, "Shuffle", act("collied.shuffle", 1));
+                  b.addAction(R.drawable.ic_c_prev, "Previous", act("collied.prev", 2));
+                  b.addAction(playing ? R.drawable.ic_c_pause : R.drawable.ic_c_play, playing ? "Pause" : "Play", act("collied.toggle", 3));
+                  b.addAction(R.drawable.ic_c_next, "Next", act("collied.next", 4));
+                  b.addAction(repeat == 0 ? R.drawable.ic_c_repeat : (repeat == 1 ? R.drawable.ic_c_repeat_on : R.drawable.ic_c_repeat_one), "Repeat", act("collied.repeat", 5));
+                  androidx.media.app.NotificationCompat.MediaStyle st = new androidx.media.app.NotificationCompat.MediaStyle();
+                  st.setMediaSession(session.getSessionToken());
+                  st.setShowActionsInCompactView(1, 2, 3);
+                  b.setStyle(st);
+                  return b.build();
+              }
+
+              private void focus(boolean on) {
+                  if (Build.VERSION.SDK_INT < 26 || am == null) return;
+                  if (on && focusReq == null) {
+                      AudioAttributes aa = new AudioAttributes.Builder()
+                          .setUsage(AudioAttributes.USAGE_MEDIA)
+                          .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                          .build();
+                      focusReq = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                          .setAudioAttributes(aa)
+                          .setOnAudioFocusChangeListener(focusL)
+                          .build();
+                      am.requestAudioFocus(focusReq);
+                  } else if (!on && focusReq != null) {
+                      am.abandonAudioFocusRequest(focusReq);
+                      focusReq = null;
+                  }
+              }
+
+              @Override
+              public void onTaskRemoved(Intent rootIntent) {
+                  playing = false;
+                  try { nm.cancel(NID); } catch (Exception ignored) { }
+                  stopSelf();
+              }
+
+              @Override
+              public void onDestroy() {
+                  instance = null;
+                  try { unregisterReceiver(noisy); } catch (Exception ignored) { }
+                  focus(false);
+                  if (session != null) {
+                      session.setActive(false);
+                      session.release();
+                      session = null;
+                  }
+                  super.onDestroy();
+              }
+
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return null;
+              }
+          }
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_next.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M6,18l8.5,-6L6,6v12zM16,6v12h2V6h-2z"/></vector>
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_pause.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M6,19h4V5H6v14zM14,5v14h4V5h-4z"/></vector>
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_play.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M8,5v14l11,-7z"/></vector>
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_prev.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M6,6h2v12H6zM9.5,12l8.5,6V6z"/></vector>
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_repeat.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M7,7h10v3l4,-4 -4,-4v3H5v6h2V7zM17,17H7v-3l-4,4 4,4v-3h12v-6h-2v4z"/></vector>
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_repeat_on.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M7,7h10v3l4,-4 -4,-4v3H5v6h2V7zM17,17H7v-3l-4,4 4,4v-3h12v-6h-2v4z M19,19m-2.2,0a2.2,2.2 0 1,0 4.4,0a2.2,2.2 0 1,0 -4.4,0"/></vector>
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_repeat_one.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M7,7h10v3l4,-4 -4,-4v3H5v6h2V7zM17,17H7v-3l-4,4 4,4v-3h12v-6h-2v4zM13,15V9h-1l-2,1v1h1.5v4H13z"/></vector>
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_shuffle.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M10.59,9.17L5.41,4 4,5.41l5.17,5.17 1.42,-1.41zM14.5,4l2.04,2.04L4,18.59 5.41,20 17.96,7.46 20,9.5V4h-5.5zM14.83,13.41l-1.41,1.41 3.13,3.13L14.5,20H20v-5.5l-2.04,2.04 -3.13,-3.13z"/></vector>
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_shuffle_on.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M10.59,9.17L5.41,4 4,5.41l5.17,5.17 1.42,-1.41zM14.5,4l2.04,2.04L4,18.59 5.41,20 17.96,7.46 20,9.5V4h-5.5zM14.83,13.41l-1.41,1.41 3.13,3.13L14.5,20H20v-5.5l-2.04,2.04 -3.13,-3.13z M19,19m-2.2,0a2.2,2.2 0 1,0 4.4,0a2.2,2.2 0 1,0 -4.4,0"/></vector>
+          NATIVEEOF
+          cat > native/res/drawable/ic_c_stat.xml <<'NATIVEEOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24"><path android:fillColor="#FFFFFFFF" android:pathData="M12,3v10.55c-0.59,-0.34 -1.27,-0.55 -2,-0.55 -2.21,0 -4,1.79 -4,4s1.79,4 4,4 4,-1.79 4,-4V7h4V3h-6z"/></vector>
+          NATIVEEOF
+
       - name: Patch version, icons, black bars, signing
         env:
           RUN: ${{ github.run_number }}
@@ -88,6 +489,50 @@ jobs:
               r.save('%s/mipmap-%s/ic_launcher_round.png' % (res, d))
               fg = '%s/mipmap-%s/ic_launcher_foreground.png' % (res, d)
               if os.path.exists(fg): os.remove(fg)
+
+          # ---- native media plugin: notification, lock screen, headset buttons ----
+          import glob
+          pkg = 'android/app/src/main/java/com/collied/player'
+          os.makedirs(pkg, exist_ok=True)
+          for f in ('MediaControlPlugin.java', 'MediaService.java'):
+              shutil.copy('native/' + f, pkg + '/' + f)
+          dr = res + '/drawable'; os.makedirs(dr, exist_ok=True)
+          for f in os.listdir('native/res/drawable'):
+              shutil.copy('native/res/drawable/' + f, dr + '/' + f)
+          mp = 'android/app/src/main/AndroidManifest.xml'; m = open(mp).read()
+          perms = ('<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n'
+                   '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />\n'
+                   '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
+                   '    <uses-permission android:name="android.permission.WAKE_LOCK" />\n    ')
+          svc = '<service android:name=".MediaService" android:exported="false" android:foregroundServiceType="mediaPlayback" />\n    '
+          if '<application' not in m or '</application>' not in m: print('manifest unexpected'); sys.exit(1)
+          m = m.replace('<application', perms + '<application', 1).replace('</application>', svc + '</application>', 1)
+          open(mp, 'w').write(m)
+          p = 'android/app/build.gradle'; s = open(p).read()
+          s, n = re.subn(r'dependencies \{', lambda x: 'dependencies {\n    implementation "androidx.media:media:1.7.0"', s, count=1)
+          if not n: print('no dependencies block'); sys.exit(1)
+          open(p, 'w').write(s)
+          mp = glob.glob('android/app/src/main/java/**/MainActivity.java', recursive=True)[0]; s = open(mp).read()
+          if 'onCreate' in s or 'onPause' in s: print('MainActivity already has onCreate/onPause - needs a manual merge'); sys.exit(1)
+          body = '''extends BridgeActivity {
+              @Override
+              public void onCreate(android.os.Bundle savedInstanceState) {
+                  registerPlugin(MediaControlPlugin.class);
+                  super.onCreate(savedInstanceState);
+                  try { getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false); } catch (Exception e) { }
+              }
+
+              @Override
+              public void onPause() {
+                  super.onPause();
+                  if (MediaService.instance != null && MediaService.playing) {
+                      try { getBridge().getWebView().onResume(); getBridge().getWebView().resumeTimers(); } catch (Exception e) { }
+                  }
+              }
+          '''
+          s, n = re.subn(r'extends BridgeActivity\s*\{', lambda x: body, s, count=1)
+          if not n: print('MainActivity patch failed'); sys.exit(1)
+          open(mp, 'w').write(s)
           print('patched ok')
           PY
 
