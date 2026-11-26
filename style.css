@@ -173,7 +173,7 @@ html.noanim *,html.noanim *::before,html.noanim *::after{animation:none!importan
 #full.dragging{transition:none!important;animation:none!important}
 #full.closing{animation:fdown .28s cubic-bezier(.4,0,.8,.4) forwards!important}
 @keyframes fdown{to{transform:translateY(100%) scale(.96);opacity:0}}
-#full{will-change:transform;touch-action:none}
+#full{touch-action:none}#full.dragging,#full.closing{will-change:transform}
 #mini{will-change:transform}
 #sheet.closing .sh-box{animation:sdown .23s cubic-bezier(.4,0,.8,.4) forwards}
 #sheet.closing .sh-bg{animation:fadeo .23s forwards}
@@ -201,7 +201,7 @@ html.noanim *,html.noanim *::before,html.noanim *::after{animation:none!importan
 #pchips{margin-bottom:12px}
 
 /* v1.4.1 smoothness + beat glow */
-.f-art{box-shadow:0 20px 50px rgba(124,92,255,.3)!important;will-change:transform,opacity;backface-visibility:hidden}
+.f-art{box-shadow:0 20px 50px rgba(124,92,255,.3)!important;}
 #full.paused .f-art{box-shadow:0 20px 50px rgba(124,92,255,.3)!important}
 .row:nth-child(n+14){animation:none}
 #list,#stats{contain:content}
@@ -209,7 +209,7 @@ html.noanim *,html.noanim *::before,html.noanim *::after{animation:none!importan
 .glow{position:fixed;left:0;right:0;bottom:0;height:100vh;height:100dvh;pointer-events:none;z-index:-1;opacity:0;transition:opacity .5s ease;contain:strict}
 .glow.on{opacity:1}
 #full>.glow{position:absolute;height:100%;animation:none!important}
-.glow i{position:absolute;bottom:0;width:62%;height:100%;transform-origin:50% 100%;transform:scaleY(0);will-change:transform}
+.glow i{position:absolute;bottom:0;width:62%;height:100%;transform-origin:50% 100%;transform:scaleY(0)}
 .glow i:nth-child(1){left:-12%;background:radial-gradient(ellipse 60% 100% at 50% 100%,rgba(124,92,255,.62),rgba(124,92,255,.2) 45%,transparent 72%)}
 .glow i:nth-child(2){left:19%;background:radial-gradient(ellipse 60% 100% at 50% 100%,rgba(200,255,61,.5),rgba(200,255,61,.14) 45%,transparent 72%)}
 .glow i:nth-child(3){left:50%;background:radial-gradient(ellipse 60% 100% at 50% 100%,rgba(255,77,141,.58),rgba(255,77,141,.18) 45%,transparent 72%)}
@@ -248,3 +248,5 @@ html,body,button,input,select,textarea{font-family:var(--font,system-ui,-apple-s
 .gset input[type=range]{width:100%;accent-color:var(--ac)}
 .gset .pre{flex-wrap:wrap}
 #lyr p.on{animation:none}
+
+body.fullopen #nav,body.fullopen #mini,body.fullopen header#top{visibility:hidden}

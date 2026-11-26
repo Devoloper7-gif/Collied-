@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.6';
+const VERSION = 'v1.7.1';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -56,7 +56,7 @@ function parseName(file){
   return m ? { artist: m[1].trim(), title: m[2].trim() } : { artist: 'Unknown artist', title: n };
 }
 function setArt(el, t){
-  if (t && t.art){ el.style.backgroundImage = 'url(' + t.art + ')'; el.textContent = ''; }
+  if (t && t.art){ el.style.backgroundImage = 'url("' + t.art + '")'; el.textContent = ''; }
   else { el.style.backgroundImage = ''; const c = esc(t && t.title).trim().charAt(0); if (c) el.textContent = c.toUpperCase(); else el.innerHTML = IC('music'); }
 }
 
@@ -291,6 +291,7 @@ function paintNow(){
   $('#m-title').textContent = t.title; $('#m-artist').textContent = t.artist;
   $('#f-title').textContent = t.title; $('#f-artist').textContent = t.artist;
   setArt($('#m-art'), t); setArt($('#f-art'), t); paintFav(); syncPlay();
+  $('#f-art').classList.remove('swl', 'swr', 'dtap');
   ['#f-art', '#m-art', '#f-title', '#m-title'].forEach(q => { const e = $(q); e.classList.remove('swap'); void e.offsetWidth; e.classList.add('swap'); });
 }
 function setSession(t){
@@ -465,13 +466,25 @@ function pickCover(t){
 async function onlineCover(t, loud){
   try {
     const q = encodeURIComponent((t.artist === 'Unknown artist' ? '' : t.artist + ' ') + t.title);
-    const r = await fetch('https://itunes.apple.com/search?media=music&entity=song&limit=3&term=' + q); if (!r.ok) throw new Error('http ' + r.status); const j = await r.json();
+    const rr = await netJson('https://itunes.apple.com/search?media=music&entity=song&limit=3&term=' + q); if (rr.status >= 400 || !rr.json) throw new Error('http ' + rr.status); const j = rr.json;
     const hit = (j.results || []).find(x => x.artworkUrl100); if (!hit){ if (loud) toast('No cover found'); return 0; }
     const url = hit.artworkUrl100.replace('100x100bb', '600x600bb');
-    const img = await fetch(url); if (!img.ok) throw new Error('img'); const art = await shrinkCover(await img.blob(), 420);
+    const art = await shrinkCover(await netBlob(url), 420);
     if (!art){ if (loud) toast('Could not download the cover'); return 0; }
     t.art = art; await trPatch(t.id, { art }); refreshArt(t); if (loud) toast('Cover found'); return 1;
   } catch (e) { if (loud) toast('Cover search needs internet'); return -1; }
+}
+
+// ================= network (native app uses Android's own HTTP, so CORS can never block covers or lyrics) =================
+const NATIVE = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
+let HTTP = null; try { if (NATIVE && Capacitor.registerPlugin) HTTP = Capacitor.registerPlugin('CapacitorHttp'); } catch (e) { HTTP = null; }
+async function netJson(url){
+  if (HTTP){ try { const r = await HTTP.request({ url, method: 'GET', responseType: 'json', headers: { Accept: 'application/json' } }); let d = r.data; if (typeof d === 'string'){ try { d = JSON.parse(d); } catch (e) {} } return { status: r.status, json: d }; } catch (e) {} }
+  const r = await fetch(url); let j = null; try { j = await r.json(); } catch (e) {} return { status: r.status, json: j };
+}
+async function netBlob(url){
+  if (HTTP){ try { const r = await HTTP.request({ url, method: 'GET', responseType: 'blob' }); if (r.status < 400 && r.data){ const bin = atob(r.data), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const h = r.headers || {}; return new Blob([u], { type: h['Content-Type'] || h['content-type'] || 'image/jpeg' }); } } catch (e) {} }
+  const r = await fetch(url); if (!r.ok) throw new Error('img'); return r.blob();
 }
 
 // ================= lyrics (lrclib) =================
@@ -487,7 +500,7 @@ function parseLrc(s){
   return out.sort((a, b) => a.t - b.t);
 }
 const cleanTitle = s => String(s || '').replace(/\(.*?\)|\[.*?\]/g, ' ').replace(/\b(feat|ft)\.?\s.*$/i, '').replace(/\b(slowed|reverb|sped up|remastered|official|lyrics|audio|video)\b/gi, ' ').replace(/\s+/g, ' ').trim();
-async function lrGet(url){ const r = await fetch(url); if (r.status === 404) return null; if (!r.ok) throw new Error('http ' + r.status); return r.json(); }
+async function lrGet(url){ const r = await netJson(url); if (r.status === 404) return null; if (r.status >= 400 || r.json == null) throw new Error('http ' + r.status); return r.json; }
 async function lrFind(t){
   const art = t.artist === 'Unknown artist' ? '' : t.artist, dur = Math.round(t.dur || 0);
   const tries = [];
@@ -816,7 +829,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   if (prefs.auto) setTimeout(() => autoFill(false), 2500);
   window.addEventListener('online', () => { if (prefs.auto) autoFill(false); });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  window.__collied = { audio, next, get tracks(){ return tracks; }, compute, get local(){ return local; }, get pls(){ return pls; }, get favs(){ return favs; }, get lyr(){ return lyr; }, parseLrc, playList };
+  window.__collied = { audio, next, get tracks(){ return tracks; }, compute, get local(){ return local; }, get pls(){ return pls; }, get favs(){ return favs; }, get lyr(){ return lyr; }, parseLrc, playList, onlineCover };
 })();
 
 
@@ -927,7 +940,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     const t = [avg(1, 7) * 1.5, avg(7, 28) * 1.9, avg(28, 90) * 3.4];
     const [at, rl] = SPD[cfg.sp] || SPD.normal; let sum = 0;
     for (let i = 0; i < 3; i++){ const v = Math.min(1, t[i]); lv[i] += (v - lv[i]) * (v > lv[i] ? at : rl); sum += lv[i]; const tf = 'scaleY(' + (lv[i] * cfg.h / 100).toFixed(3) + ')'; gs[0].children[i].style.transform = tf; gs[1].children[i].style.transform = tf; }
-    gs.forEach(x => x.classList.add('on'));
+    const fo = !$('#full').hidden; gs[0].classList.toggle('on', !fo); gs[1].classList.toggle('on', fo);
     all = sum / 3; if (!$('#full').hidden && $('#full').classList.contains('lyr-on')) lyrE.style.setProperty('--ll', Math.min(1, all * 1.6).toFixed(2));   // lyrics glow follows the music
   }
   function stop(){ if (raf){ cancelAnimationFrame(raf); raf = 0; } gs.forEach(x => x.classList.remove('on')); lv = [0, 0, 0]; lyrE.style.setProperty('--ll', '0'); setTimeout(() => { if (!raf) gs.forEach(x => [...x.children].forEach(b => { b.style.transform = 'scaleY(0)'; })); }, 520); }
@@ -987,4 +1000,49 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     } catch (e) { info.textContent = 'Could not check. Are you online?'; }
     finally { btn.disabled = false; }
   };
+})();
+
+// ================= v1.7 Android: system media notification, lock screen, headset buttons =================
+(function(){
+  if (!NATIVE) return;
+  let MC = null; try { MC = Capacitor.registerPlugin('MediaControl'); } catch (e) { return; }
+  let lastKey = '', asked = false;
+  const keyOf = t => t.id + ':' + (t.art ? t.art.length : 0);
+  function push(){
+    const t = queue[qi]; if (!t) return;
+    const o = { playing: !audio.paused, position: audio.currentTime || 0, duration: isFinite(audio.duration) ? audio.duration : (t.dur || 0), speed: prefs.speed || 1, shuffle: !!shuffle, repeat: repeat | 0 };
+    const k = keyOf(t);
+    if (k !== lastKey){ lastKey = k; o.meta = true; o.title = t.title || ''; o.artist = t.artist || ''; o.album = t.album || ''; o.art = t.art || ''; }
+    try { MC.update(o).catch(() => {}); } catch (e) {}
+  }
+  ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata', 'durationchange'].forEach(ev => audio.addEventListener(ev, push));
+  audio.addEventListener('play', () => { if (!asked){ asked = true; try { MC.requestNotif().catch(() => {}); } catch (e) {} } });
+  audio.addEventListener('timeupdate', () => { const t = queue[qi]; if (t && keyOf(t) !== lastKey) push(); });   // cover arrived later
+  $('#f-shuf').addEventListener('click', () => setTimeout(push, 30));
+  $('#f-rep').addEventListener('click', () => setTimeout(push, 30));
+  try {
+    MC.addListener('action', e => {
+      switch (e && e.name){
+        case 'play': if (audio.paused) toggle(); break;
+        case 'pause': if (!audio.paused) audio.pause(); break;
+        case 'next': next(false); break;
+        case 'prev': prev(); break;
+        case 'seek': audio.currentTime = Math.max(0, e.position || 0); break;
+        case 'shuffle': $('#f-shuf').click(); break;
+        case 'repeat': $('#f-rep').click(); break;
+      }
+    });
+  } catch (e) {}
+})();
+
+// ================= v1.7.1 lighter drawing while the big player is open =================
+(function(){
+  const full = $('#full'); let tm = 0;
+  const sync = () => {
+    clearTimeout(tm);
+    if (full.hidden || full.classList.contains('dragging') || full.classList.contains('closing')){ document.body.classList.remove('fullopen'); return; }
+    tm = setTimeout(() => { if (!full.hidden && !full.classList.contains('dragging') && !full.classList.contains('closing')) document.body.classList.add('fullopen'); }, 380);
+  };
+  new MutationObserver(sync).observe(full, { attributes: true, attributeFilter: ['class', 'hidden'] });
+  const art = $('#f-art'); art.addEventListener('animationend', () => art.classList.remove('swap', 'dtap'));
 })();

@@ -88,10 +88,22 @@ async function readMeta(file){
   } catch (e) { return {}; }
 }
 async function shrinkCover(blob, px){
-  try {
-    const bm = await createImageBitmap(blob), r = Math.min(1, px / Math.max(bm.width, bm.height));
-    const c = document.createElement('canvas'); c.width = Math.round(bm.width * r); c.height = Math.round(bm.height * r);
-    c.getContext('2d').drawImage(bm, 0, 0, c.width, c.height);
-    return c.toDataURL('image/jpeg', 0.82);
-  } catch (e) { return ''; }
+  const draw = (src, w, h) => {
+    const r = Math.min(1, px / Math.max(w, h)), c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w * r)); c.height = Math.max(1, Math.round(h * r));
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    let u = c.toDataURL('image/jpeg', 0.82); if (!u || u.length < 200) u = c.toDataURL('image/png'); return u;
+  };
+  try { const bm = await createImageBitmap(blob); const u = draw(bm, bm.width, bm.height); if (bm.close) bm.close(); if (u) return u; } catch (e) {}
+  try {   // fallback for WebViews where createImageBitmap(blob) fails
+    const url = URL.createObjectURL(blob);
+    try {
+      const im = new Image(); im.src = url; await new Promise((ok, no) => { im.onload = ok; im.onerror = no; });
+      const u = draw(im, im.naturalWidth || im.width, im.naturalHeight || im.height); if (u) return u;
+    } finally { URL.revokeObjectURL(url); }
+  } catch (e) {}
+  try {   // last resort: keep the picture as it is if it is small
+    if (blob.size < 600 * 1024) return await new Promise(ok => { const fr = new FileReader(); fr.onload = () => ok(String(fr.result)); fr.onerror = () => ok(''); fr.readAsDataURL(blob); });
+  } catch (e) {}
+  return '';
 }
