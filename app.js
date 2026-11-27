@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.8';
+const VERSION = 'v1.9';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -33,7 +33,7 @@ let queue = [], qi = -1, shuffle = false, repeat = 0;
 let view = { k: 'songs' }, period = 'all';
 const audio = new Audio(); audio.preload = 'auto';
 let curUrl = null, sess = null, pendingSeek = 0;
-let prefs = { speed: 1, auto: true }, auto = { scan: {}, art: {} }, rates = {}, starts = {}, ab = null;
+let prefs = { speed: 1, auto: true }, auto = { scan: {}, art: {} }, rates = {}, starts = {}, loops = {}, ab = null;
 const rateOf = t => (t && rates[t.id]) || 1;
 const saveRates = () => kvSet('rates', rates).catch(() => {});
 const savePrefs = () => kvSet('prefs', prefs).catch(() => {});
@@ -263,7 +263,7 @@ audio.pause = function(){
 // ================= player =================
 async function playIndex(i, seek){
   if (i < 0 || i >= queue.length) return;
-  await endSess(); if (!audio.paused && fadeOn && !document.hidden) await ramp(0, 150); qi = i; const t = queue[i]; ab = null; abPaint();
+  await endSess(); if (!audio.paused && fadeOn && !document.hidden) await ramp(0, 150); qi = i; const t = queue[i]; ab = loops[t.id] ? { a: loops[t.id].a, b: loops[t.id].b } : null; abPaint();
   prefs.speed = rateOf(t); applySpeed();   // this song's saved speed & pitch, or 1x if never set
   const full = await trGet(t.id); if (!full){ toast('File missing'); return; }
   if (curUrl) URL.revokeObjectURL(curUrl);
@@ -297,7 +297,7 @@ function paintNow(){
   $('#mini').hidden = false;
   $('#m-title').textContent = t.title; $('#m-artist').textContent = t.artist;
   $('#f-title').textContent = t.title; $('#f-artist').textContent = t.artist;
-  setArt($('#m-art'), t); setArt($('#f-art'), t); paintFav(); syncPlay();
+  setArt($('#m-art'), t); setArt($('#f-art'), t); paintFav(); syncPlay(); if (window.__lpPaint) window.__lpPaint();
   $('#f-art').classList.remove('swl', 'swr', 'dtap');
   ['#f-art', '#m-art', '#f-title', '#m-title'].forEach(q => { const e = $(q); e.classList.remove('swap'); void e.offsetWidth; e.classList.add('swap'); });
 }
@@ -422,10 +422,49 @@ $('#f-more').onclick = () => sheet(box => {
   opt(box, 'Set cover from a photo…', () => pickCover(t), true, { icon: 'image' });
   opt(box, 'Find cover online', () => onlineCover(t, true), true, { icon: 'search' });
   opt(box, 'Search lyrics manually…', () => lyricSearch(t), true, { icon: 'lyrics' });
+  opt(box, 'Vocals and music volume…', () => setTimeout(balanceSheet, 260), true, { icon: 'wave' });
   opt(box, 'Loop a part (A-B)…', () => setTimeout(loopSheet, 260), true, { icon: 'repeat' });
   const sp = starts[t.id];
   opt(box, sp > 0 ? 'Start point: ' + fmt(sp) + ' (tap to clear)' : 'Start this song from here (' + fmt(audio.currentTime) + ')', async () => { if (sp > 0){ delete starts[t.id]; toast('Start point cleared'); } else { starts[t.id] = Math.round(audio.currentTime * 10) / 10; toast('Will start at ' + fmt(starts[t.id])); } await kvSet('starts', starts).catch(() => {}); }, true, { icon: 'play' });
 });
+// ---- v1.9 vocals / music balance: splits the song into the centre (voice) and the rest (instruments, bass) and mixes them again ----
+const bal = { v: 100, m: 100, g: null };
+try { Object.assign(bal, JSON.parse(localStorage.getItem('collied_bal') || '{}')); bal.g = null; } catch (e) {}
+function balGraph(){
+  if (bal.g) return bal.g;
+  const G = window.__glow; const ac = G.ctx(); if (ac.state === 'suspended') ac.resume().catch(() => {});
+  const mes = ac.createMediaElementSource(audio), sp = ac.createChannelSplitter(2), mg = ac.createChannelMerger(2);
+  const half = () => { const x = ac.createGain(); x.gain.value = 0.5; return x; }, gain = v => { const x = ac.createGain(); x.gain.value = v; return x; };
+  const mid = half(), side = half(), neg = gain(-1), lo = ac.createBiquadFilter(), hi = ac.createBiquadFilter();
+  lo.type = 'lowpass'; lo.frequency.value = 170; hi.type = 'highpass'; hi.frequency.value = 170;
+  const sM = gain(1), lM = gain(1), vG = gain(1), sInv = gain(-1);
+  mes.connect(sp); sp.connect(mid, 0); sp.connect(mid, 1); sp.connect(side, 0); sp.connect(neg, 1); neg.connect(side);
+  mid.connect(lo); mid.connect(hi); side.connect(sM); lo.connect(lM); hi.connect(vG); sM.connect(sInv);
+  sM.connect(mg, 0, 0); sInv.connect(mg, 0, 1); lM.connect(mg, 0, 0); lM.connect(mg, 0, 1); vG.connect(mg, 0, 0); vG.connect(mg, 0, 1);
+  mg.connect(ac.destination); G.tap(mg);
+  return bal.g = { ac, sM, lM, vG };
+}
+function balApply(){
+  const bypass = bal.v === 100 && bal.m === 100 && !bal.g; if (bypass) return;
+  const g = balGraph(); const m = bal.m / 100, v = bal.v / 100, t = g.ac.currentTime;
+  [g.sM, g.lM].forEach(x => x.gain.setTargetAtTime(m, t, 0.02)); g.vG.gain.setTargetAtTime(v, t, 0.02);
+  if (g.ac.state === 'suspended') g.ac.resume().catch(() => {});
+}
+audio.addEventListener('playing', () => { if (bal.g && bal.g.ac.state === 'suspended') bal.g.ac.resume().catch(() => {}); });
+function balanceSheet(){
+  sheet(box => {
+    box.appendChild(Object.assign(document.createElement('h3'), { textContent: 'Vocals and music' }));
+    const card = document.createElement('div'); card.className = 'tcard';
+    card.innerHTML = '<div class="trow"><span class="tl">' + IC('lyrics') + 'Vocals (voice)</span><b class="tv" id="bv-v"></b></div><div class="stp"><input type="range" id="bv-r" min="0" max="100" step="1"></div>' +
+      '<div class="trow" style="margin-top:14px"><span class="tl">' + IC('music') + 'Music (background)</span><b class="tv" id="bm-v"></b></div><div class="stp"><input type="range" id="bm-r" min="0" max="100" step="1"></div>' +
+      '<p class="note">Works by separating what sits in the centre of the stereo picture (usually the voice) from the rest. It is an approximation: on some songs a little of the voice stays in the music or a little bass goes with the voice. Songs that are mono cannot be split.</p><button class="btn" id="b-reset">Reset to normal</button>';
+    box.appendChild(card); const q = x => card.querySelector(x);
+    const paint = () => { q('#bv-v').textContent = bal.v + '%'; q('#bm-v').textContent = bal.m + '%'; q('#bv-r').value = bal.v; q('#bm-r').value = bal.m; };
+    const save = () => { try { localStorage.setItem('collied_bal', JSON.stringify({ v: bal.v, m: bal.m })); } catch (e) {} balApply(); paint(); };
+    q('#bv-r').oninput = e => { bal.v = +e.target.value; save(); }; q('#bm-r').oninput = e => { bal.m = +e.target.value; save(); };
+    q('#b-reset').onclick = () => { bal.v = 100; bal.m = 100; save(); toast('Back to normal'); }; paint();
+  });
+}
 function abPaint(){ $('#f-more').classList.toggle('on', !!(ab && ab.b != null)); }
 function loopSheet(){
   sheet(box => {
@@ -435,8 +474,8 @@ function loopSheet(){
     box.appendChild(card); const q = x => card.querySelector(x);
     const paint = () => { q('#ab-v').textContent = ab ? fmt(ab.a) + ' - ' + (ab.b != null ? fmt(ab.b) : '?') : 'Off'; abPaint(); };
     q('#ab-a').onclick = () => { ab = { a: audio.currentTime, b: null }; paint(); toast('A set'); };
-    q('#ab-b').onclick = () => { if (!ab){ toast('Set A first'); return; } if (audio.currentTime < ab.a + 0.5){ toast('B must be after A'); return; } ab.b = audio.currentTime; paint(); toast('Looping'); startAB(); };
-    q('#ab-c').onclick = () => { ab = null; paint(); toast('Loop cleared'); };
+    q('#ab-b').onclick = () => { if (!ab){ toast('Set A first'); return; } if (audio.currentTime < ab.a + 0.5){ toast('B must be after A'); return; } ab.b = audio.currentTime; const lt = queue[qi]; if (lt){ loops[lt.id] = { a: ab.a, b: ab.b }; kvSet('loops', loops).catch(() => {}); } paint(); toast('Looping (saved for this song)'); startAB(); };
+    q('#ab-c').onclick = () => { ab = null; const lt = queue[qi]; if (lt && loops[lt.id]){ delete loops[lt.id]; kvSet('loops', loops).catch(() => {}); } paint(); toast('Loop cleared'); };
     paint();
   });
 }
@@ -683,7 +722,7 @@ function songMenu(t){
     if (view.k === 'pl'){ opt(box, 'Remove from this playlist', async () => { const p = pls.find(x => x.id === view.id); if (p){ p.sids = p.sids.filter(s => s !== t.sid); await savePls(); renderList(); } }); }
     opt(box, 'Edit title & artist…', async () => { const a = await asyncPrompt('Title', t.title); if (a === null) return; const b = await asyncPrompt('Artist', t.artist); if (b === null) return; t.title = a.trim() || t.title; t.artist = b.trim() || t.artist; t.edited = 1; await trPatch(t.id, { title: t.title, artist: t.artist, edited: 1 }); renderList(); });
     opt(box, 'Set cover from a photo…', () => pickCover(t)); opt(box, 'Find cover online', () => onlineCover(t, true));
-    opt(box, 'Remove from Collied', async () => { if (!confirm('Remove "' + t.title + '" from Collied? (Your stats stay.)')) return; await trDel(t.id); await kvDel('lyr:' + t.id); delete rates[t.id]; delete starts[t.id]; kvSet('starts', starts).catch(() => {}); saveRates(); tracks = tracks.filter(x => x.id !== t.id); queue = queue.filter(x => x.id !== t.id); renderList(); });
+    opt(box, 'Remove from Collied', async () => { if (!confirm('Remove "' + t.title + '" from Collied? (Your stats stay.)')) return; await trDel(t.id); await kvDel('lyr:' + t.id); if (loops[t.id]){ delete loops[t.id]; kvSet('loops', loops).catch(() => {}); } delete rates[t.id]; delete starts[t.id]; kvSet('starts', starts).catch(() => {}); saveRates(); tracks = tracks.filter(x => x.id !== t.id); queue = queue.filter(x => x.id !== t.id); renderList(); });
   });
 }
 function setSub(sub, title){ $('#back').hidden = !sub; $('#title').textContent = title; }
@@ -817,20 +856,32 @@ $('#instbtn').onclick = async () => { if (!deferredInstall) return; deferredInst
 $('#animsw').onchange = e => { document.documentElement.classList.toggle('noanim', !e.target.checked); try { localStorage.setItem('collied_anim', e.target.checked ? 'on' : 'off'); } catch (x) {} };
 
 // ================= tabs + boot =================
-const titles = { 'tab-lib': 'Library', 'tab-stats': 'Stats', 'tab-set': 'Backup' };
+const titles = { 'tab-lib': 'Library', 'tab-stats': 'Stats', 'tab-set': 'Settings' };
+let settingsOpen = false, afterSettings = null;
+function curTabBtn(){ return document.querySelector('#nav button.on') || document.querySelector('#nav button'); }
+function openSettings(){
+  if (settingsOpen) return; settingsOpen = true; const prev = curTabBtn(); afterSettings = prev;
+  document.querySelectorAll('#nav button').forEach(x => x.classList.remove('on'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-set'));
+  setSub(true, 'Settings'); $('#gear').hidden = true; info(); window.scrollTo(0, 0);
+  pushUI(() => { settingsOpen = false; $('#gear').hidden = false; const b = afterSettings || document.querySelector('#nav button'); afterSettings = null; b.click(); });
+}
+$('#gear').onclick = openSettings;
 document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
+  if (settingsOpen){ afterSettings = b; popUI(); return; }
   document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('on', x === b));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === b.dataset.t));
   $('#back').hidden = true; $('#title').textContent = titles[b.dataset.t];
-  if (b.dataset.t === 'tab-lib') renderList(); if (b.dataset.t === 'tab-stats') renderStats(); if (b.dataset.t === 'tab-set') info();
+  if (b.dataset.t === 'tab-lib') renderList(); if (b.dataset.t === 'tab-stats') renderStats();
   window.scrollTo(0, 0);
 });
 (async function(){
+  if (bal.v !== 100 || bal.m !== 100) audio.addEventListener('playing', () => balApply(), { once: true });
   $('#ver').textContent = 'Collied ' + VERSION + ' · personal use · everything stays on this phone.';
   $('#animsw').checked = !document.documentElement.classList.contains('noanim');
   try {
     backup = (await kvGet('backup')) || null; master = (await kvGet('master')) || null; if (!master && backup) await absorb(backup); local = (await kvGet('local')) || []; pls = (await kvGet('pls')) || []; favs = (await kvGet('favs')) || [];
-    prefs = Object.assign(prefs, (await kvGet('prefs')) || {}); auto = Object.assign({ scan: {}, art: {} }, (await kvGet('auto')) || {}); rates = (await kvGet('rates')) || {}; starts = (await kvGet('starts')) || {};
+    prefs = Object.assign(prefs, (await kvGet('prefs')) || {}); auto = Object.assign({ scan: {}, art: {} }, (await kvGet('auto')) || {}); rates = (await kvGet('rates')) || {}; loops = (await kvGet('loops')) || {}; starts = (await kvGet('starts')) || {};
     buildKnown(); tracks = (await trAll()).map(t => { delete t.blob; return t; });
     const last = await kvGet('last'); if (last){ const t = tracks.find(x => x.id === last.id); if (t){ queue = tracks.slice().sort(byTitle); qi = queue.indexOf(t); pendingSeek = last.pos || 0; paintNow(); } }
   } catch (e) { toast('Storage unavailable'); }
@@ -855,6 +906,26 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     lyrShown = !lyrShown; full.classList.toggle('lyr-on', lyrShown); $('#f-lyr').classList.toggle('on', lyrShown);
     if (lyrShown){ if (!lyr || lyr.id !== (queue[qi] && queue[qi].id)){ lyr = null; drawLyrics(); } loadLyrics(false); setTimeout(() => lyrTick(true), 60); }
   };
+  // ---- v1.9 lyrics page: tap ON a lyric line = whole page of lyrics; tap beside the lines = back to the cover ----
+  const lpage = $('#lpage'), home = stage; let lpOpen = false;
+  let lpPic = true; try { lpPic = localStorage.getItem('collied_lpbg') !== 'off'; } catch (e) {}
+  const lpsw = $('#lpbgsw'); lpsw.checked = lpPic;
+  lpsw.onchange = () => { lpPic = lpsw.checked; try { localStorage.setItem('collied_lpbg', lpPic ? 'on' : 'off'); } catch (e) {} };
+  const bars = hide => { try { const SB = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.SystemBars; if (SB) (hide ? SB.hide() : SB.show()); } catch (e) {} try { if (hide){ if (!document.fullscreenElement && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {}); } else if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {}); } catch (e) {} };
+  const lpPaint = () => { const t = queue[qi]; if (!lpOpen || !t) return; $('#lp-t').textContent = t.title || ''; $('#lp-a').textContent = t.artist || ''; $('#lp-bg').style.backgroundImage = (lpPic && t.art) ? 'url("' + t.art + '")' : ''; };
+  window.__lpPaint = lpPaint;
+  function openLpage(){
+    if (lpOpen) return; lpOpen = true; lpage.hidden = false; lpage.classList.toggle('black', !lpPic); lpPaint(); if (!lpPic) bars(true); $('#lp-t').textContent = (queue[qi] && queue[qi].title) || ''; $('#lp-a').textContent = (queue[qi] && queue[qi].artist) || '';
+    lpage.querySelector('.lp-body').appendChild(lyrEl); lyrEl.style.touchAction = 'pan-y'; lyrEl.classList.add('inpage');
+    pushUI(() => { lpOpen = false; if (!lpPic) bars(false); home.appendChild(lyrEl); lyrEl.classList.remove('inpage'); lpage.hidden = true; setTimeout(() => lyrTick(true), 60); });
+    setTimeout(() => lyrTick(true), 80);
+  }
+  $('#lp-back').onclick = () => popUI();
+  window.__openLpage = openLpage;
+  // long press on a line jumps there (same as in the player)
+  let lpt = null;
+  lpage.addEventListener('pointerdown', e => { const p = e.target.closest('#lyr p'); clearTimeout(lpt); if (!p || !lyr || !lyr.lines) return; const x0 = e.clientX, y0 = e.clientY; lpage._m = false; lpt = setTimeout(() => { if (lpage._m) return; const i = [...lyrEl.querySelectorAll('p')].indexOf(p), l = lyr.lines[i]; if (l){ audio.currentTime = Math.max(0, l.t - (lyr.c.off || 0)); if (navigator.vibrate) navigator.vibrate(12); toast('Jumped to this line'); } }, 700); });
+  lpage.addEventListener('pointermove', () => { lpage._m = true; clearTimeout(lpt); }); lpage.addEventListener('pointerup', () => clearTimeout(lpt)); lpage.addEventListener('pointercancel', () => clearTimeout(lpt));
   // taps on lyric lines no longer jump; a long press does (so a tap can close the lyrics)
   lyrEl.addEventListener('click', e => { if (e.target.closest('.st button')) return; e.stopPropagation(); e.preventDefault(); }, true);
 
@@ -862,7 +933,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   let tap = null, taps = 0, tapT = null, lp = null, lpFired = false;
   stage.addEventListener('pointerdown', e => {
     if (e.target.closest('.st button')) return;
-    tap = { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId, moved: false }; lpFired = false;
+    tap = { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId, moved: false, line: !!e.target.closest('#lyr p') }; lpFired = false;
     const p = e.target.closest('#lyr p');
     clearTimeout(lp); if (p && lyr && lyr.lines && lyr.lines.length){ lp = setTimeout(() => { if (tap && !tap.moved){ const i = [...lyrEl.querySelectorAll('p')].indexOf(p); const l = lyr.lines[i]; if (l){ lpFired = true; audio.currentTime = Math.max(0, l.t - (lyr.c.off || 0)); if (navigator.vibrate) navigator.vibrate(12); toast('Jumped to this line'); } } }, 700); }
   });
@@ -877,7 +948,8 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     if (lpFired || dt > 450) return;
     taps++; clearTimeout(tapT);
     if (taps >= 2){ taps = 0; toggle(); const a = $('#f-art'); a.classList.remove('dtap'); void a.offsetWidth; a.classList.add('dtap'); return; }
-    tapT = setTimeout(() => { taps = 0; $('#f-lyr').click(); }, 260);
+    const onLine = lyrShown && !!t0.line;
+    tapT = setTimeout(() => { taps = 0; if (onLine) openLpage(); else $('#f-lyr').click(); }, 260);
   };
   stage.addEventListener('pointerup', endTap); stage.addEventListener('pointercancel', () => { tap = null; clearTimeout(lp); });
   function swipeSong(dir){
@@ -894,12 +966,12 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   full.addEventListener('pointermove', e => {
     if (!dg) return; const dy = e.clientY - dg.y, dx = e.clientX - dg.x;
     if (!dg.on){ if (dy > 14 && dy > Math.abs(dx) * 1.3){ dg.on = true; full.classList.add('dragging'); try { full.setPointerCapture(dg.id); } catch (x) {} } else if (Math.abs(dx) > 14 || dy < -14){ dg = null; return; } else return; }
-    dg.y2 = Math.max(0, dy); if (!dg.raf) dg.raf = requestAnimationFrame(() => { if (!dg) return; dg.raf = 0; const y = dg.y2; full.style.transform = 'translate3d(0,' + y + 'px,0) scale(' + (1 - Math.min(y, 400) / 4000) + ')'; full.style.opacity = String(1 - Math.min(y, 500) / 900); });
+    dg.y2 = Math.max(0, dy); if (!dg.raf) dg.raf = requestAnimationFrame(() => { if (!dg) return; dg.raf = 0; const y = dg.y2; full.style.transform = 'translate3d(0,' + y + 'px,0)'; });
   });
   const endDrag = e => {
     if (!dg) return; const d = dg; dg = null; if (d.raf) cancelAnimationFrame(d.raf); if (!d.on) return;
     const dy = e.clientY - d.y, v = dy / Math.max(1, Date.now() - d.t); full.classList.remove('dragging');
-    if (dy > 140 || v > 0.7){ full.dataset.drop = '1'; full.style.transition = 'transform .22s cubic-bezier(.3,.8,.3,1), opacity .22s ease'; full.style.transform = 'translate3d(0,100%,0)'; full.style.opacity = '0'; popUI(); }
+    if (dy > 140 || v > 0.7){ full.dataset.drop = '1'; full.style.transition = 'transform .22s cubic-bezier(.3,.8,.3,1), opacity .22s ease'; full.style.transform = 'translate3d(0,100%,0)'; popUI(); }
     else { full.style.transform = ''; full.style.opacity = ''; }
   };
   full.addEventListener('pointerup', endDrag); full.addEventListener('pointercancel', endDrag);
@@ -916,7 +988,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
 
 // ================= v1.4.1 beat glow (bass / mid / treble, like Argus) =================
 (function(){
-  const g = document.querySelector('body>.glow'), g2 = g.cloneNode(true); $('#full').insertBefore(g2, $('#full').firstChild); const gs = [g, g2], sw = $('#glowsw');
+  const g = document.querySelector('body>.glow'), g2 = g.cloneNode(true); $('#full').insertBefore(g2, $('#full').firstChild); const g3 = g.cloneNode(true); $('#lpage').insertBefore(g3, $('#lpage').firstChild); const gs = [g, g2, g3], sw = $('#glowsw');
   let on = true, lyrOn = true; try { on = localStorage.getItem('collied_glow') !== 'off'; lyrOn = localStorage.getItem('collied_lyrglow') !== 'off'; } catch (e) {}
   const lsw = $('#lyrglowsw'); lsw.checked = lyrOn;
   let ac = null, an = null, src = null, fb = null, raf = 0, flip = 0, lv = [0, 0, 0], all = 0;
@@ -953,9 +1025,9 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     an.getByteFrequencyData(fb);
     const t = [avg(1, 7) * 1.5, avg(7, 28) * 1.9, avg(28, 90) * 3.4];
     const [at, rl] = SPD[cfg.sp] || SPD.normal; let sum = 0;
-    for (let i = 0; i < 3; i++){ const v = Math.min(1, t[i]); lv[i] += (v - lv[i]) * (v > lv[i] ? at : rl); sum += lv[i]; if (on){ const tf = 'scaleY(' + (lv[i] * cfg.h / 100).toFixed(3) + ')'; gs[0].children[i].style.transform = tf; gs[1].children[i].style.transform = tf; } }
-    if (on){ const fo = !$('#full').hidden; gs[0].classList.toggle('on', !fo); gs[1].classList.toggle('on', fo); } else gs.forEach(x => x.classList.remove('on'));
-    all = sum / 3; lyrE.style.setProperty('--ll', (lyrOn && !$('#full').hidden && $('#full').classList.contains('lyr-on')) ? Math.min(1, all * 1.6).toFixed(2) : '0');   // lyrics glow follows the music
+    for (let i = 0; i < 3; i++){ const v = Math.min(1, t[i]); lv[i] += (v - lv[i]) * (v > lv[i] ? at : rl); sum += lv[i]; if (on){ const tf = 'scaleY(' + (lv[i] * cfg.h / 100).toFixed(3) + ')'; gs[0].children[i].style.transform = tf; gs[1].children[i].style.transform = tf; gs[2].children[i].style.transform = tf; } }
+    if (on){ const lo = !$('#lpage').hidden, fo = !$('#full').hidden && !lo; gs[0].classList.toggle('on', !fo && !lo); gs[1].classList.toggle('on', fo); gs[2].classList.toggle('on', lo); } else gs.forEach(x => x.classList.remove('on'));
+    all = sum / 3; lyrE.style.setProperty('--ll', (lyrOn && !$('#full').hidden && ($('#full').classList.contains('lyr-on') || !$('#lpage').hidden)) ? Math.min(1, all * 1.6).toFixed(2) : '0');   // lyrics glow follows the music
   }
   function stop(){ if (raf){ cancelAnimationFrame(raf); raf = 0; } gs.forEach(x => x.classList.remove('on')); lv = [0, 0, 0]; lyrE.style.setProperty('--ll', '0'); setTimeout(() => { if (!raf) gs.forEach(x => [...x.children].forEach(b => { b.style.transform = 'scaleY(0)'; })); }, 520); }
   audio.addEventListener('playing', () => { hook(); if (!raf && (on || lyrOn)) raf = requestAnimationFrame(loop); });
@@ -967,7 +1039,9 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#g-sp button').forEach(b => b.onclick = () => { cfg.sp = b.dataset.v; saveCfg(); applyCfg(); });
   $('#g-br').oninput = e => { cfg.br = +e.target.value; saveCfg(); applyCfg(); };
   $('#g-h').oninput = e => { cfg.h = +e.target.value; saveCfg(); applyCfg(); };
-  window.__glow = { get lv(){ return lv; } };
+  window.__glow = { get lv(){ return lv; },
+    ctx(){ if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)(); return ac; },
+    tap(node){ if (!an){ an = ac.createAnalyser(); an.fftSize = 256; an.smoothingTimeConstant = 0.5; fb = new Uint8Array(an.frequencyBinCount); } if (src){ try { src.disconnect(); } catch (e) {} src = null; } mes = true; node.connect(an); if (!audio.paused && (on || lyrOn) && !raf) raf = requestAnimationFrame(loop); } };
 })();
 
 // ================= v1.6 look: accent colour + font (background always pure black) =================
@@ -1042,10 +1116,11 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   $('#f-shuf').addEventListener('click', () => setTimeout(push, 30));
   $('#f-rep').addEventListener('click', () => setTimeout(push, 30));
   try {
+    setTimeout(() => { try { MC.pending().then(r => { if (r && r.play) setTimeout(() => { if (audio.paused) toggle(); }, 600); }).catch(() => {}); } catch (x) {} }, 1400);   // play was pressed in the notification while the app was closed
     MC.addListener('action', e => {
       lastAct = (e && e.name) || ''; lastAt = Date.now();
       switch (e && e.name){
-        case 'play': if (audio.paused) toggle(); break;
+        case 'play': if (audio.paused){ if (audio.error || audio.ended) { try { audio.load(); } catch (x) {} } toggle(); } break;
         case 'pause': if (!audio.paused) audio.pause(); break;
         case 'next': next(false); break;
         case 'prev': prev(); break;
@@ -1063,7 +1138,8 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   const full = $('#full'); let tm = 0;
   const sync = () => {
     clearTimeout(tm);
-    if (full.hidden || full.classList.contains('dragging') || full.classList.contains('closing')){ document.body.classList.remove('fullopen'); return; }
+    if (full.hidden){ if (document.body.classList.contains('fullopen')){ document.body.classList.remove('fullopen'); document.body.classList.add('reveal'); setTimeout(() => document.body.classList.remove('reveal'), 320); } return; }
+    if (full.classList.contains('dragging') || full.classList.contains('closing')){ document.body.classList.add('fullopen'); return; }
     tm = setTimeout(() => { if (!full.hidden && !full.classList.contains('dragging') && !full.classList.contains('closing')) document.body.classList.add('fullopen'); }, 380);
   };
   new MutationObserver(sync).observe(full, { attributes: true, attributeFilter: ['class', 'hidden'] });

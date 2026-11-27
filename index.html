@@ -16,6 +16,7 @@
 <symbol id="i-repeat" viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></symbol>
 <symbol id="i-repeat1" viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><path d="M11 10h1v4"/></symbol>
 <symbol id="i-heart" viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
 <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
 <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
 <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.7" fill="currentColor" stroke="none"/></symbol>
@@ -33,7 +34,7 @@
 <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
 <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
 </svg>
-<header id="top"><button id="back" aria-label="Back" hidden><svg class="i"><use href="#i-left"/></svg></button><h1 id="title">Library</h1></header>
+<header id="top"><button id="back" aria-label="Back" hidden><svg class="i"><use href="#i-left"/></svg></button><h1 id="title">Library</h1><button id="gear" aria-label="Settings"><svg class="i"><use href="#i-gear"/></svg></button></header>
 <main>
   <section id="tab-lib" class="tab active">
     <div class="chips" id="chips"><button data-v="songs" class="on">Songs</button><button data-v="favs">Favourites</button><button data-v="pls">Playlists</button><button data-v="artists">Artists</button></div>
@@ -58,6 +59,7 @@
     <div class="card gset"><h3>Beat glow</h3>
       <label class="sw"><span>Show the glow at the bottom</span><input type="checkbox" id="glowsw"></label>
       <label class="sw"><span>Lyrics glow that follows the music</span><input type="checkbox" id="lyrglowsw"></label>
+      <label class="sw"><span>Cover picture behind the lyrics page (off = pure black, full screen)</span><input type="checkbox" id="lpbgsw"></label>
       <div class="gl">Speed</div><div class="pre" id="g-sp"><button data-v="slow">Slow</button><button data-v="normal">Normal</button><button data-v="fast">Fast</button></div>
       <div class="gl">Brightness <b id="g-brv"></b></div><input type="range" id="g-br" min="15" max="100" step="5">
       <div class="gl">Height <b id="g-hv"></b></div><input type="range" id="g-h" min="25" max="100" step="5"></div>
@@ -94,8 +96,9 @@
   </div>
 </div>
 
+<div id="lpage" hidden><div class="lp-bg" id="lp-bg"></div><div class="lp-top"><button id="lp-back" aria-label="Back"><svg class="i"><use href="#i-left"/></svg></button><div class="lp-ti"><b id="lp-t"></b><span id="lp-a"></span></div></div><div class="lp-body"></div></div>
 <div id="sheet" hidden><div class="sh-bg"></div><div class="sh-box"></div></div>
-<nav id="nav"><button data-t="tab-lib" class="on">Library</button><button data-t="tab-stats">Stats</button><button data-t="tab-set">Backup</button></nav>
+<nav id="nav"><button data-t="tab-lib" class="on">Library</button><button data-t="tab-stats">Stats</button></nav>
 <div class="glow" aria-hidden="true"><i></i><i></i><i></i></div>
 <div id="toast"></div>
 <script src="meta.js"></script><script src="app.js"></script>
