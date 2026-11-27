@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.7.3';
+const VERSION = 'v1.7.4';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -1021,7 +1021,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   }
   window.__mc = { MC, push: force => { if (force) lastKey = ''; push(); }, err: () => mcErr };
   ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata', 'durationchange'].forEach(ev => audio.addEventListener(ev, push));
-  audio.addEventListener('play', () => { if (!asked){ asked = true; try { MC.requestNotif().catch(e => { mcErr = 'permission: ' + String((e && e.message) || e); }); } catch (e) {}
+  audio.addEventListener('play', () => { if (!asked){ asked = true; try { Promise.resolve(MC.requestNotif()).then(() => { lastKey = ''; push(); }).catch(e => { mcErr = 'permission: ' + String((e && e.message) || e); }); } catch (e) {}
     setTimeout(async () => {   // tell the truth on screen if the system notification did not come up
       try { const s = await MC.status(); if (!s.serviceUp || s.posted === false || s.lastError) toast('Media notification problem: ' + (s.lastError || (!s.serviceUp ? 'service not running' : 'not posted')) + '. See Backup > Media notification.'); } catch (e) { toast('Media plugin not reachable. See Backup > Media notification.'); }
     }, 4000); } });
