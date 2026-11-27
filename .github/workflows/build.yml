@@ -117,6 +117,26 @@ jobs:
 
               @PermissionCallback
               private void permDone(PluginCall call) {
+                  if (getPermissionState("notifications") == PermissionState.GRANTED) {
+                      final MediaService svc = MediaService.instance;
+                      if (svc != null) {
+                          new Handler(Looper.getMainLooper()).post(new Runnable() {
+                              @Override
+                              public void run() {
+                                  svc.refresh();
+                              }
+                          });
+                      } else if (MediaService.playing) {
+                          try {
+                              Context c = getContext();
+                              Intent i = new Intent(c, MediaService.class);
+                              i.setAction("collied.update");
+                              ContextCompat.startForegroundService(c, i);
+                          } catch (Exception e) {
+                              MediaService.lastError = "start: " + e;
+                          }
+                      }
+                  }
                   call.resolve();
               }
 
@@ -305,7 +325,7 @@ jobs:
                   try {
                       Intent mbi = new Intent(Intent.ACTION_MEDIA_BUTTON);
                       mbi.setComponent(new ComponentName(this, MediaButtonReceiver.class));
-                      session.setMediaButtonReceiver(PendingIntent.getBroadcast(this, 0, mbi, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+                      session.setMediaButtonReceiver(PendingIntent.getBroadcast(this, 0, mbi, (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0) | PendingIntent.FLAG_UPDATE_CURRENT));
                   } catch (Exception e) { lastError = "mbr: " + e; }
                   session.setCallback(new MediaSessionCompat.Callback() {
                       @Override
