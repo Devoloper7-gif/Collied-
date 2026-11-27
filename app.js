@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.7.5';
+const VERSION = 'v1.8';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -65,6 +65,13 @@ const noAnim = () => document.documentElement.classList.contains('noanim');
 const uiStack = [];
 function pushUI(close){ uiStack.push(close); history.pushState({ c: uiStack.length }, ''); }
 function popUI(){ if (uiStack.length) history.back(); }
+// Android hardware back: close the top layer (sheet, big player, sub list); false = nothing left to close
+function backAction(){
+  if (!uiStack.length) return false;
+  const n = uiStack.length; popUI();
+  setTimeout(() => { if (uiStack.length === n){ const c = uiStack.pop(); if (c) c(); } }, 140);   // if the browser history did not answer
+  return true;
+}
 window.addEventListener('popstate', () => { const c = uiStack.pop(); if (c) c(); });
 
 // ================= sheet =================
@@ -305,7 +312,9 @@ function setSession(t){
 $('#m-play').onclick = e => { e.stopPropagation(); toggle(); };
 $('#m-next').onclick = e => { e.stopPropagation(); next(false); };
 $('#mini').onclick = () => openFull();
-function closeFull(){ const f = $('#full'); if (f.hidden) return; if (noAnim()){ f.hidden = true; f.style.transform = ''; f.style.opacity = ''; return; } f.classList.remove('dragging'); f.classList.add('closing'); f.style.transform = ''; f.style.opacity = ''; setTimeout(() => { f.hidden = true; f.classList.remove('closing'); }, 280); }
+function closeFull(){ const f = $('#full'); if (f.hidden) return;
+  if (f.dataset.drop){ delete f.dataset.drop; setTimeout(() => { f.hidden = true; f.classList.remove('closing', 'dragging'); f.style.transition = ''; f.style.transform = ''; f.style.opacity = ''; }, 240); return; }   // released after a drag: keep sliding from where the finger left it
+  if (noAnim()){ f.hidden = true; f.style.transform = ''; f.style.opacity = ''; return; } f.classList.remove('dragging'); f.classList.add('closing'); f.style.transform = ''; f.style.opacity = ''; setTimeout(() => { f.hidden = true; f.classList.remove('closing'); }, 280); }
 function openFull(){ const f = $('#full'); if (!f.hidden && !f.classList.contains('closing')) return; f.classList.remove('closing', 'dragging'); f.style.transform = ''; f.style.opacity = ''; f.hidden = false; pushUI(closeFull); }
 $('#f-close').onclick = () => popUI();
 $('#f-play').onclick = toggle; $('#f-next').onclick = () => next(false); $('#f-prev').onclick = prev;
@@ -890,7 +899,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   const endDrag = e => {
     if (!dg) return; const d = dg; dg = null; if (d.raf) cancelAnimationFrame(d.raf); if (!d.on) return;
     const dy = e.clientY - d.y, v = dy / Math.max(1, Date.now() - d.t); full.classList.remove('dragging');
-    if (dy > 140 || v > 0.7){ full.style.transform = 'translateY(100%)'; full.style.opacity = '0'; popUI(); }
+    if (dy > 140 || v > 0.7){ full.dataset.drop = '1'; full.style.transition = 'transform .22s cubic-bezier(.3,.8,.3,1), opacity .22s ease'; full.style.transform = 'translate3d(0,100%,0)'; full.style.opacity = '0'; popUI(); }
     else { full.style.transform = ''; full.style.opacity = ''; }
   };
   full.addEventListener('pointerup', endDrag); full.addEventListener('pointercancel', endDrag);
@@ -908,7 +917,8 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
 // ================= v1.4.1 beat glow (bass / mid / treble, like Argus) =================
 (function(){
   const g = document.querySelector('body>.glow'), g2 = g.cloneNode(true); $('#full').insertBefore(g2, $('#full').firstChild); const gs = [g, g2], sw = $('#glowsw');
-  let on = true; try { on = localStorage.getItem('collied_glow') !== 'off'; } catch (e) {}
+  let on = true, lyrOn = true; try { on = localStorage.getItem('collied_glow') !== 'off'; lyrOn = localStorage.getItem('collied_lyrglow') !== 'off'; } catch (e) {}
+  const lsw = $('#lyrglowsw'); lsw.checked = lyrOn;
   let ac = null, an = null, src = null, fb = null, raf = 0, flip = 0, lv = [0, 0, 0], all = 0;
   const SPD = { slow: [0.35, 0.07], normal: [0.7, 0.16], fast: [0.92, 0.32] };
   let cfg = { sp: 'normal', br: 100, h: 85 }; try { cfg = Object.assign(cfg, JSON.parse(localStorage.getItem('collied_glowcfg') || '{}')); } catch (e) {}
@@ -919,7 +929,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   let mes = null;
   const hook = () => {
     try {
-      if (!on || mes) return;
+      if (!(on || lyrOn) || mes) return;
       if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
       if (ac.state === 'suspended') ac.resume().catch(() => {});
       if (!an){ an = ac.createAnalyser(); an.fftSize = 256; an.smoothingTimeConstant = 0.5; fb = new Uint8Array(an.frequencyBinCount); }
@@ -937,21 +947,22 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   const avg = (a, b) => { let s = 0; for (let i = a; i < b; i++) s += fb[i]; return s / (b - a) / 255; };
   function loop(){
     raf = 0;
-    if (audio.paused || document.hidden || !on || !an){ stop(); return; }
+    if (audio.paused || document.hidden || !(on || lyrOn) || !an){ stop(); return; }
     raf = requestAnimationFrame(loop);
     if ((flip ^= 1)) return;              // ~30 fps is enough and keeps the phone cool
     an.getByteFrequencyData(fb);
     const t = [avg(1, 7) * 1.5, avg(7, 28) * 1.9, avg(28, 90) * 3.4];
     const [at, rl] = SPD[cfg.sp] || SPD.normal; let sum = 0;
-    for (let i = 0; i < 3; i++){ const v = Math.min(1, t[i]); lv[i] += (v - lv[i]) * (v > lv[i] ? at : rl); sum += lv[i]; const tf = 'scaleY(' + (lv[i] * cfg.h / 100).toFixed(3) + ')'; gs[0].children[i].style.transform = tf; gs[1].children[i].style.transform = tf; }
-    const fo = !$('#full').hidden; gs[0].classList.toggle('on', !fo); gs[1].classList.toggle('on', fo);
-    all = sum / 3; if (!$('#full').hidden && $('#full').classList.contains('lyr-on')) lyrE.style.setProperty('--ll', Math.min(1, all * 1.6).toFixed(2));   // lyrics glow follows the music
+    for (let i = 0; i < 3; i++){ const v = Math.min(1, t[i]); lv[i] += (v - lv[i]) * (v > lv[i] ? at : rl); sum += lv[i]; if (on){ const tf = 'scaleY(' + (lv[i] * cfg.h / 100).toFixed(3) + ')'; gs[0].children[i].style.transform = tf; gs[1].children[i].style.transform = tf; } }
+    if (on){ const fo = !$('#full').hidden; gs[0].classList.toggle('on', !fo); gs[1].classList.toggle('on', fo); } else gs.forEach(x => x.classList.remove('on'));
+    all = sum / 3; lyrE.style.setProperty('--ll', (lyrOn && !$('#full').hidden && $('#full').classList.contains('lyr-on')) ? Math.min(1, all * 1.6).toFixed(2) : '0');   // lyrics glow follows the music
   }
   function stop(){ if (raf){ cancelAnimationFrame(raf); raf = 0; } gs.forEach(x => x.classList.remove('on')); lv = [0, 0, 0]; lyrE.style.setProperty('--ll', '0'); setTimeout(() => { if (!raf) gs.forEach(x => [...x.children].forEach(b => { b.style.transform = 'scaleY(0)'; })); }, 520); }
-  audio.addEventListener('playing', () => { hook(); if (!raf && on) raf = requestAnimationFrame(loop); });
+  audio.addEventListener('playing', () => { hook(); if (!raf && (on || lyrOn)) raf = requestAnimationFrame(loop); });
   ['pause', 'ended', 'emptied'].forEach(ev => audio.addEventListener(ev, stop));
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && !audio.paused && !raf && on) raf = requestAnimationFrame(loop); });
-  sw.onchange = () => { on = sw.checked; try { localStorage.setItem('collied_glow', on ? 'on' : 'off'); } catch (e) {} if (!on) stop(); else if (!audio.paused){ hook(); if (!raf) raf = requestAnimationFrame(loop); } };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && !audio.paused && !raf && (on || lyrOn)) raf = requestAnimationFrame(loop); });
+  sw.onchange = () => { on = sw.checked; try { localStorage.setItem('collied_glow', on ? 'on' : 'off'); } catch (e) {} if (!(on || lyrOn)) stop(); else if (!audio.paused){ hook(); if (!raf) raf = requestAnimationFrame(loop); } };
+  lsw.onchange = () => { lyrOn = lsw.checked; try { localStorage.setItem('collied_lyrglow', lyrOn ? 'on' : 'off'); } catch (e) {} if (!lyrOn) lyrE.style.setProperty('--ll', '0'); if (!(on || lyrOn)) stop(); else if (!audio.paused){ hook(); if (!raf) raf = requestAnimationFrame(loop); } };
   applyCfg();
   document.querySelectorAll('#g-sp button').forEach(b => b.onclick = () => { cfg.sp = b.dataset.v; saveCfg(); applyCfg(); });
   $('#g-br').oninput = e => { cfg.br = +e.target.value; saveCfg(); applyCfg(); };
@@ -982,7 +993,8 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   const btn = $('#updbtn'), info = $('#updinfo'), chg = $('#updrepo');
   const num = v => (String(v).match(/\d+/g) || []).map(Number);
   const newer = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++){ const x = a[i] || 0, y = b[i] || 0; if (x !== y) return x > y; } return false; };
-  const getRepo = () => { try { return localStorage.getItem('collied_repo') || ''; } catch (e) { return ''; } };
+  const DEFAULT_REPO = 'Devoloper7-gif/Collied-';
+  const getRepo = () => { try { return localStorage.getItem('collied_repo') || DEFAULT_REPO; } catch (e) { return DEFAULT_REPO; } };
   const ok = r => /^[\w.-]+\/[\w.-]+$/.test(r);
   async function ask(){ const r = ((await asyncPrompt('GitHub repo, like yourname/collied', getRepo())) || '').trim(); if (!ok(r)) return ''; try { localStorage.setItem('collied_repo', r); } catch (e) {} return r; }
   chg.onclick = async () => { const r = await ask(); info.textContent = r ? 'Repo saved: ' + r : 'Not saved. Write it like yourname/collied'; };
@@ -1009,7 +1021,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
 // ================= v1.7 Android: system media notification, lock screen, headset buttons =================
 (function(){
   if (!NATIVE) return;
-  let MC = null, mcErr = ''; try { MC = (Capacitor.Plugins && Capacitor.Plugins.MediaControl) || (Capacitor.registerPlugin ? Capacitor.registerPlugin('MediaControl') : null); } catch (e) { window.__mc = { fail: String(e) }; return; }
+  let MC = null, mcErr = '', lastAct = '', lastAt = 0; try { MC = (Capacitor.Plugins && Capacitor.Plugins.MediaControl) || (Capacitor.registerPlugin ? Capacitor.registerPlugin('MediaControl') : null); } catch (e) { window.__mc = { fail: String(e) }; return; }
   if (!MC){ window.__mc = { fail: 'MediaControl is not on Capacitor.Plugins' }; return; }
   let lastKey = '', asked = false;
   const keyOf = t => t.id + ':' + (t.art ? t.art.length : 0);
@@ -1020,7 +1032,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     if (k !== lastKey){ lastKey = k; o.meta = true; o.title = t.title || ''; o.artist = t.artist || ''; o.album = t.album || ''; o.art = t.art || ''; }
     try { MC.update(o).catch(e => { mcErr = 'update: ' + String((e && e.message) || e); lastKey = ''; }); } catch (e) { mcErr = 'update: ' + e; lastKey = ''; }
   }
-  window.__mc = { MC, push: force => { if (force) lastKey = ''; push(); }, err: () => mcErr };
+  window.__mc = { MC, push: force => { if (force) lastKey = ''; push(); }, err: () => mcErr, last: () => lastAct ? lastAct + ' (' + Math.round((Date.now() - lastAt) / 1000) + 's ago)' : 'none' };
   ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata', 'durationchange'].forEach(ev => audio.addEventListener(ev, push));
   audio.addEventListener('play', () => { if (!asked){ asked = true; try { Promise.resolve(MC.requestNotif()).then(() => { lastKey = ''; push(); }).catch(e => { mcErr = 'permission: ' + String((e && e.message) || e); }); } catch (e) {}
     setTimeout(async () => {   // tell the truth on screen if the system notification did not come up
@@ -1031,6 +1043,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   $('#f-rep').addEventListener('click', () => setTimeout(push, 30));
   try {
     MC.addListener('action', e => {
+      lastAct = (e && e.name) || ''; lastAt = Date.now();
       switch (e && e.name){
         case 'play': if (audio.paused) toggle(); break;
         case 'pause': if (!audio.paused) audio.pause(); break;
@@ -1039,6 +1052,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
         case 'seek': audio.currentTime = Math.max(0, e.position || 0); break;
         case 'shuffle': $('#f-shuf').click(); break;
         case 'repeat': $('#f-rep').click(); break;
+        case 'back': if (!backAction()){ try { MC.minimize(); } catch (x) {} } break;
       }
     });
   } catch (e) {}
@@ -1074,9 +1088,25 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
       L.push('Updates received: ' + s.updates + ' | service running: ' + (s.serviceUp ? 'yes' : 'NO') + ' | refreshes: ' + s.refreshes);
       L.push('Notification posted: ' + (s.posted === undefined ? '-' : (s.posted ? 'yes' : 'NO')) + ' | cover in it: ' + (s.hasArt ? 'yes' : 'no'));
       L.push('Headset keys received: ' + s.keys + ' | sent to the app: ' + s.emitted);
+      L.push('Last button from notification: ' + (s.lastAct || 'none') + ' | handled by the app: ' + m.last());
       if (s.lastError) L.push('Native error: ' + s.lastError);
     } catch (e) { L.push('Plugin call failed: ' + String((e && e.message) || e)); }
     if (m.err()) L.push('App error: ' + m.err());
     out.textContent = L.join('\n');
   };
+})();
+
+// ================= v1.8 header: slides away when you scroll down, comes back when you scroll up =================
+(function(){
+  const hd = $('#top'); let last = 0, raf = 0, hid = false;
+  const yOf = t => (!t || t === document || t === document.documentElement || t === document.body) ? (window.scrollY || document.documentElement.scrollTop || 0) : t.scrollTop;
+  window.addEventListener('scroll', e => {
+    const t = e.target; if (t && t.closest && t.closest('#full,#sheet,#lyr')) return;
+    if (raf) return; raf = requestAnimationFrame(() => {
+      raf = 0; const y = yOf(t), d = y - last; last = y;
+      if (y < 24 || d < -6){ if (hid){ hid = false; hd.classList.remove('away'); } }
+      else if (d > 6 && y > 60){ if (!hid){ hid = true; hd.classList.add('away'); } }
+    });
+  }, { capture: true, passive: true });
+  document.querySelectorAll('#nav button').forEach(b => b.addEventListener('click', () => { hid = false; last = 0; hd.classList.remove('away'); }));
 })();
