@@ -245,8 +245,6 @@ jobs:
           import android.content.IntentFilter;
           import android.content.pm.ServiceInfo;
           import android.graphics.Bitmap;
-          import android.media.AudioAttributes;
-          import android.media.AudioFocusRequest;
           import android.media.AudioManager;
           import android.os.Build;
           import android.os.IBinder;
@@ -277,9 +275,7 @@ jobs:
 
               private MediaSessionCompat session;
               private NotificationManager nm;
-              private AudioManager am;
-              private AudioFocusRequest focusReq;
-              private boolean fg = false, needFg = true, resumeOnGain = false;
+              private boolean fg = false, needFg = true;
 
               private final BroadcastReceiver noisy = new BroadcastReceiver() {
                   @Override
@@ -288,32 +284,11 @@ jobs:
                   }
               };
 
-              private final AudioManager.OnAudioFocusChangeListener focusL = new AudioManager.OnAudioFocusChangeListener() {
-                  @Override
-                  public void onAudioFocusChange(int change) {
-                      if (change == AudioManager.AUDIOFOCUS_LOSS) {
-                          resumeOnGain = false;
-                          MediaControlPlugin.emit("pause");
-                      } else if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-                          if (playing) {
-                              resumeOnGain = true;
-                              MediaControlPlugin.emit("pause");
-                          }
-                      } else if (change == AudioManager.AUDIOFOCUS_GAIN) {
-                          if (resumeOnGain) {
-                              resumeOnGain = false;
-                              MediaControlPlugin.emit("play");
-                          }
-                      }
-                  }
-              };
-
               @Override
               public void onCreate() {
                   super.onCreate();
                   instance = this;
                   nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-                  am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
                   if (Build.VERSION.SDK_INT >= 26) {
                       NotificationChannel ch = new NotificationChannel(CH, "Playback", NotificationManager.IMPORTANCE_LOW);
                       ch.setShowBadge(false);
@@ -407,15 +382,12 @@ jobs:
                           fg = true;
                           needFg = false;
                       }
-                      if (playing) {
-                          focus(true);
-                      } else {
+                      if (!playing) {
                           if (fg) {
                               ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH);
                               fg = false;
                           }
                           nm.notify(NID, n);
-                          if (!resumeOnGain) focus(false);
                       }
                   } catch (Exception e) {
                       lastError = "fg: " + e;
@@ -458,24 +430,6 @@ jobs:
                   return b.build();
               }
 
-              private void focus(boolean on) {
-                  if (Build.VERSION.SDK_INT < 26 || am == null) return;
-                  if (on && focusReq == null) {
-                      AudioAttributes aa = new AudioAttributes.Builder()
-                          .setUsage(AudioAttributes.USAGE_MEDIA)
-                          .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                          .build();
-                      focusReq = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                          .setAudioAttributes(aa)
-                          .setOnAudioFocusChangeListener(focusL)
-                          .build();
-                      am.requestAudioFocus(focusReq);
-                  } else if (!on && focusReq != null) {
-                      am.abandonAudioFocusRequest(focusReq);
-                      focusReq = null;
-                  }
-              }
-
               @Override
               public void onTaskRemoved(Intent rootIntent) {
                   playing = false;
@@ -487,7 +441,6 @@ jobs:
               public void onDestroy() {
                   instance = null;
                   try { unregisterReceiver(noisy); } catch (Exception ignored) { }
-                  focus(false);
                   if (session != null) {
                       session.setActive(false);
                       session.release();
