@@ -85,6 +85,7 @@ jobs:
 
               static MediaControlPlugin inst;
               static int emitted = 0;
+              static String lastAct = "";
 
               @Override
               public void load() {
@@ -97,6 +98,7 @@ jobs:
                   if (p == null) return;
                   JSObject o = new JSObject();
                   emitted++;
+                  lastAct = name;
                   o.put("name", name);
                   if (position >= 0) o.put("position", position);
                   p.notifyListeners("action", o);
@@ -104,6 +106,13 @@ jobs:
 
               static void emit(String name) {
                   emit(name, -1);
+              }
+
+              /** Sends the app to the background (music keeps playing) */
+              @PluginMethod
+              public void minimize(PluginCall call) {
+                  try { getActivity().moveTaskToBack(true); } catch (Exception e) { MediaService.lastError = "min: " + e; }
+                  call.resolve();
               }
 
               @PluginMethod
@@ -156,6 +165,7 @@ jobs:
                       o.put("refreshes", MediaService.refreshes);
                       o.put("keys", MediaService.keys);
                       o.put("emitted", emitted);
+                      o.put("lastAct", lastAct);
                       o.put("lastError", MediaService.lastError);
                       NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
                       if (Build.VERSION.SDK_INT >= 23) {
@@ -315,8 +325,8 @@ jobs:
                       @Override public void onStop() { MediaControlPlugin.emit("pause"); }
                       @Override public void onSeekTo(long pos) { MediaControlPlugin.emit("seek", pos / 1000.0); }
                       @Override public void onCustomAction(String action, android.os.Bundle extras) {
-                          if ("shuffle".equals(action)) MediaControlPlugin.emit("shuffle");
-                          else if ("repeat".equals(action)) MediaControlPlugin.emit("repeat");
+                          if ("shuffle".equals(action)) { shuffle = !shuffle; refresh(); MediaControlPlugin.emit("shuffle"); }
+                          else if ("repeat".equals(action)) { repeat = (repeat + 1) % 3; refresh(); MediaControlPlugin.emit("repeat"); }
                       }
                   });
                   session.setActive(true);
@@ -339,8 +349,8 @@ jobs:
                       if (a.equals("collied.toggle")) MediaControlPlugin.emit(playing ? "pause" : "play");
                       else if (a.equals("collied.next")) MediaControlPlugin.emit("next");
                       else if (a.equals("collied.prev")) MediaControlPlugin.emit("prev");
-                      else if (a.equals("collied.shuffle")) MediaControlPlugin.emit("shuffle");
-                      else if (a.equals("collied.repeat")) MediaControlPlugin.emit("repeat");
+                      else if (a.equals("collied.shuffle")) { shuffle = !shuffle; refresh(); MediaControlPlugin.emit("shuffle"); }
+                      else if (a.equals("collied.repeat")) { repeat = (repeat + 1) % 3; refresh(); MediaControlPlugin.emit("repeat"); }
                   }
                   refresh();
                   return START_NOT_STICKY;
@@ -376,17 +386,12 @@ jobs:
 
                   Notification n = buildNotification();
                   try {
-                      if (playing || needFg) {
+                      if (!fg && (playing || needFg)) {   // go foreground once; after that only update (re-entering while in background throws on Android 12+)
                           int type = Build.VERSION.SDK_INT >= 29 ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK : 0;
                           ServiceCompat.startForeground(this, NID, n, type);
                           fg = true;
                           needFg = false;
-                      }
-                      if (!playing) {
-                          if (fg) {
-                              ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH);
-                              fg = false;
-                          }
+                      } else {
                           nm.notify(NID, n);
                       }
                   } catch (Exception e) {
@@ -560,6 +565,12 @@ jobs:
                   registerPlugin(MediaControlPlugin.class);
                   super.onCreate(savedInstanceState);
                   try { getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false); } catch (Exception e) { }
+                  getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
+                      @Override public void handleOnBackPressed() {
+                          if (MediaControlPlugin.inst == null) moveTaskToBack(true);
+                          else MediaControlPlugin.emit("back");
+                      }
+                  });
               }
 
               @Override
