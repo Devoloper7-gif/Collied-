@@ -95,7 +95,7 @@ jobs:
               /** Sends a button press (play, pause, next, prev, seek, shuffle, repeat, stop) to app.js */
               static void emit(String name, double position) {
                   MediaControlPlugin p = inst;
-                  if (p == null) return;
+                  if (p == null) { if (name.equals("play")) MediaService.resume(); return; }
                   JSObject o = new JSObject();
                   emitted++;
                   lastAct = name;
@@ -109,6 +109,15 @@ jobs:
               }
 
               /** Sends the app to the background (music keeps playing) */
+              /** True once if play was pressed in the notification while the app was closed */
+              @PluginMethod
+              public void pending(PluginCall call) {
+                  JSObject o = new JSObject();
+                  o.put("play", MediaService.pendingPlay);
+                  MediaService.pendingPlay = false;
+                  call.resolve(o);
+              }
+
               @PluginMethod
               public void minimize(PluginCall call) {
                   try { getActivity().moveTaskToBack(true); } catch (Exception e) { MediaService.lastError = "min: " + e; }
@@ -274,6 +283,29 @@ jobs:
               static final int NID = 7;
 
               static MediaService instance;
+              static boolean pendingPlay = false;
+              private android.os.PowerManager.WakeLock wl;
+
+              /** Play was pressed (notification / headset) while the app screen is gone: remember it and bring the app back so it can start the song */
+              static void resume() {
+                  pendingPlay = true;
+                  MediaService s = instance;
+                  if (s == null) return;
+                  try {
+                      Intent i = new Intent(s, MainActivity.class);
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                      s.startActivity(i);
+                  } catch (Exception e) { lastError = "resume: " + e; }
+              }
+
+              private void wake(boolean on) {
+                  try {
+                      if (on) {
+                          if (wl == null) { wl = ((android.os.PowerManager) getSystemService(Context.POWER_SERVICE)).newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "collied:play"); wl.setReferenceCounted(false); }
+                          if (!wl.isHeld()) wl.acquire();
+                      } else if (wl != null && wl.isHeld()) wl.release();
+                  } catch (Exception e) { lastError = "wl: " + e; }
+              }
               static String title = "", artist = "", album = "";
               static Bitmap art;
               static long durMs = 0, posMs = 0;
@@ -339,10 +371,6 @@ jobs:
                   if (Intent.ACTION_MEDIA_BUTTON.equals(a)) {
                       refresh();
                       try { MediaButtonReceiver.handleIntent(session, intent); } catch (Exception e) { lastError = "key: " + e; }
-                      if (MediaControlPlugin.inst == null) {   // app was closed: nobody to play the song, do not leave an empty notification
-                          try { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE); } catch (Exception ignored) { }
-                          stopSelf();
-                      }
                       return START_NOT_STICKY;
                   }
                   if (a != null) {
@@ -359,6 +387,7 @@ jobs:
               void refresh() {
                   if (session == null) return;
                   refreshes++;
+                  wake(playing);
                   MediaMetadataCompat.Builder mb = new MediaMetadataCompat.Builder()
                       .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
                       .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
