@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.7.4';
+const VERSION = 'v1.7.5';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -477,7 +477,7 @@ async function onlineCover(t, loud){
 
 // ================= network (native app uses Android's own HTTP, so CORS can never block covers or lyrics) =================
 const NATIVE = !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
-let HTTP = null; try { if (NATIVE && Capacitor.registerPlugin) HTTP = Capacitor.registerPlugin('CapacitorHttp'); } catch (e) { HTTP = null; }
+let HTTP = null; try { if (NATIVE) HTTP = (Capacitor.Plugins && Capacitor.Plugins.CapacitorHttp) || (Capacitor.registerPlugin ? Capacitor.registerPlugin('CapacitorHttp') : null); } catch (e) { HTTP = null; }
 async function netJson(url){
   if (HTTP){ try { const r = await HTTP.request({ url, method: 'GET', responseType: 'json', headers: { Accept: 'application/json' } }); let d = r.data; if (typeof d === 'string'){ try { d = JSON.parse(d); } catch (e) {} } return { status: r.status, json: d }; } catch (e) {} }
   const r = await fetch(url); let j = null; try { j = await r.json(); } catch (e) {} return { status: r.status, json: j };
@@ -1009,7 +1009,8 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
 // ================= v1.7 Android: system media notification, lock screen, headset buttons =================
 (function(){
   if (!NATIVE) return;
-  let MC = null, mcErr = ''; try { MC = Capacitor.registerPlugin('MediaControl'); } catch (e) { window.__mc = { fail: String(e) }; return; }
+  let MC = null, mcErr = ''; try { MC = (Capacitor.Plugins && Capacitor.Plugins.MediaControl) || (Capacitor.registerPlugin ? Capacitor.registerPlugin('MediaControl') : null); } catch (e) { window.__mc = { fail: String(e) }; return; }
+  if (!MC){ window.__mc = { fail: 'MediaControl is not on Capacitor.Plugins' }; return; }
   let lastKey = '', asked = false;
   const keyOf = t => t.id + ':' + (t.art ? t.art.length : 0);
   function push(){
