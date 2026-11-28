@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.9.3';
+const VERSION = 'v1.9.4';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -812,63 +812,103 @@ async function fetchFile(url, name){
   try { const r = await fetch(url); if (!r.ok) throw new Error(r.status); const b = await r.blob(); return new File([b], name, { type: b.type || 'audio/mpeg' }); }
   catch (e) { const b = await netBlob(url); return new File([b], name, { type: b.type || 'audio/mpeg' }); }
 }
+const lev = (a, b) => { const m = a.length, n = b.length; if (!m) return n; if (!n) return m; let p = Array.from({ length: n + 1 }, (_, i) => i); for (let i = 1; i <= m; i++){ let d = [i]; for (let j = 1; j <= n; j++) d[j] = Math.min(p[j] + 1, d[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); p = d; } return p[n]; };
+const toks = x => String(x || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9ঀ-৿]+/).filter(Boolean);
+function simScore(q, text){   // typo-tolerant match: 1 = every typed word is found (even spelled a bit wrong)
+  const qt = toks(q), tt = toks(text); if (!qt.length) return 0; let sum = 0;
+  qt.forEach(w => { let best = 0; tt.forEach(x => { let v = 0; if (x === w) v = 1; else if (x.startsWith(w) || (w.length > 2 && x.includes(w))) v = 0.9; else v = Math.max(0, 1 - lev(w, x) / Math.max(w.length, x.length)); if (v > best) best = v; }); sum += best; });
+  return sum / qt.length;
+}
 async function iaSearch(q){
-  const e = encodeURIComponent(q.replace(/["\\]/g, ' '));
-  const url = 'https://archive.org/advancedsearch.php?q=' + encodeURIComponent('(title:(' + q.replace(/["\\]/g, ' ') + ') OR creator:(' + q.replace(/["\\]/g, ' ') + ')) AND mediatype:audio AND (licenseurl:* OR collection:netlabels)') + '&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=creator&fl%5B%5D=licenseurl&rows=25&sort%5B%5D=downloads+desc&output=json';
+  const t = toks(q).slice(0, 5); if (!t.length) return [];
+  const part = w => '(title:(' + w + '~) OR creator:(' + w + '~) OR title:(' + w + '*) OR creator:(' + w + '*))';
+  const url = 'https://archive.org/advancedsearch.php?q=' + encodeURIComponent(t.map(part).join(' AND ') + ' AND mediatype:audio AND (licenseurl:* OR collection:netlabels)') + '&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=creator&fl%5B%5D=licenseurl&rows=40&sort%5B%5D=downloads+desc&output=json';
   const r = await netJson(url); const d = r.json && r.json.response && r.json.response.docs || [];
-  return d.map(x => ({ src: 'ia', id: x.identifier, title: [].concat(x.title || x.identifier)[0], artist: [].concat(x.creator || '')[0] || 'Unknown', lic: x.licenseurl ? [].concat(x.licenseurl)[0] : 'Netlabel (check item page)', page: 'https://archive.org/details/' + x.identifier }));
+  return d.map(x => ({ src: 'ia', id: x.identifier, title: [].concat(x.title || x.identifier)[0], artist: [].concat(x.creator || '')[0] || 'Unknown', lic: x.licenseurl ? [].concat(x.licenseurl)[0] : 'Netlabel (check item page)' }));
 }
 async function iaFiles(id, artist){
   const r = await netJson('https://archive.org/metadata/' + encodeURIComponent(id)); const fs = (r.json && r.json.files) || [];
   const pick = ['VBR MP3', 'MP3', '128Kbps MP3', 'Ogg Vorbis', 'Flac']; let out = [];
   for (const f of pick){ out = fs.filter(x => x.format === f); if (out.length) break; }
-  return out.slice(0, 40).map(f => ({ url: 'https://archive.org/download/' + encodeURIComponent(id) + '/' + f.name.split('/').map(encodeURIComponent).join('/'), name: clean(artist) + ' - ' + clean(f.title || f.name.replace(/\.[^.]+$/, '')) + (f.name.match(/\.[^.]+$/) || ['.mp3'])[0] }));
+  return out.slice(0, 40).map(f => { const ti = clean(f.title || f.name.replace(/\.[^.]+$/, '')); return { title: ti, url: 'https://archive.org/download/' + encodeURIComponent(id) + '/' + f.name.split('/').map(encodeURIComponent).join('/'), name: clean(artist) + ' - ' + ti + (f.name.match(/\.[^.]+$/) || ['.mp3'])[0] }; });
 }
 async function jamSearch(q){
   const k = jamKey(); if (!k) throw new Error('key');
-  const r = await netJson('https://api.jamendo.com/v3.0/tracks/?client_id=' + encodeURIComponent(k) + '&format=json&limit=25&search=' + encodeURIComponent(q) + '&audiodownload_allowed=true&order=popularity_total');
+  const r = await netJson('https://api.jamendo.com/v3.0/tracks/?client_id=' + encodeURIComponent(k) + '&format=json&limit=30&search=' + encodeURIComponent(q) + '&audiodownload_allowed=true&order=popularity_total');
   const d = r.json && r.json.results || [];
-  return d.filter(x => x.audiodownload_allowed && x.audiodownload).map(x => ({ src: 'jam', id: x.id, title: x.name, artist: x.artist_name, lic: x.license_ccurl || 'Creative Commons', page: x.shareurl, url: x.audiodownload, name: clean(x.artist_name) + ' - ' + clean(x.name) + '.mp3' }));
+  return d.filter(x => x.audiodownload_allowed && x.audiodownload).map(x => ({ src: 'jam', id: x.id, title: x.name, artist: x.artist_name, lic: x.license_ccurl || 'Creative Commons', url: x.audiodownload, play: x.audio || x.audiodownload, name: clean(x.artist_name) + ' - ' + clean(x.name) + '.mp3' }));
 }
+// one preview player for the whole sheet; the main player is paused while a preview plays
+const pv = new Audio(); pv.preload = 'none'; let pvBtn = null, pvUrl = '', pvWatch = 0;
+const setPvIcon = (btn, on) => { if (btn) btn.innerHTML = IC(on ? 'pause' : 'play'); };
+function pvStop(){ try { pv.pause(); } catch (e) {} setPvIcon(pvBtn, false); pvBtn = null; pvUrl = ''; clearInterval(pvWatch); }
+function pvToggle(url, btn){
+  if (pvUrl === url && !pv.paused){ pvStop(); return; }
+  pvStop(); if (!audio.paused) audio.pause();
+  pvUrl = url; pvBtn = btn; pv.src = url; setPvIcon(btn, true);
+  pv.play().catch(() => { toast('Cannot play this one'); pvStop(); });
+  pvWatch = setInterval(() => { if ($('#sheet').hidden) pvStop(); }, 400);
+}
+pv.addEventListener('ended', pvStop);
 function onlineSheet(){
-  let srcK = 'ia', busy = false;
+  let srcK = 'ia', busy = false, seq = 0, timer = 0;
   sheet(box => {
     box.appendChild(Object.assign(document.createElement('h3'), { textContent: 'Find music online' }));
     const w = document.createElement('div'); w.innerHTML =
       '<div class="pre" id="on-src"><button data-v="ia" class="on">Internet Archive</button><button data-v="jam">Jamendo</button></div>' +
-      '<div class="bar" style="margin-top:10px"><input id="on-q" type="search" placeholder="Song or artist"><button class="btn pri" id="on-go">Search</button></div>' +
+      '<div class="bar" style="margin-top:10px"><input id="on-q" type="search" placeholder="Start typing a song or artist"></div>' +
       '<div id="on-key" class="note" hidden></div><div id="on-st" class="note"></div><div id="on-res"></div>' +
-      '<p class="note">Only music that is free to download is listed: Creative Commons and similar. You are responsible for following each licence (many need you to credit the artist). Popular commercial songs are not here.</p>';
-    box.appendChild(w); const q = x => w.querySelector(x);
+      '<p class="note">Only music offered for free download is listed (Creative Commons and similar). Keeping it on your phone for your own listening is fine. If you share or publish it, follow the licence shown on each song (many ask you to credit the artist).</p>';
+    box.appendChild(w); const q = x => w.querySelector(x); pvStop();
     const keyBox = () => { const kb = q('#on-key'); if (srcK !== 'jam'){ kb.hidden = true; return; } kb.hidden = false;
       kb.innerHTML = 'Jamendo needs your own free key (client id). Get one at <b>devportal.jamendo.com</b>, paste it here. It stays on this phone only.<div class="bar" style="margin-top:8px"><input id="on-k" type="text" placeholder="client id" value="' + jamKey().replace(/"/g, '') + '"><button class="btn" id="on-ks">Save</button></div>';
-      kb.querySelector('#on-ks').onclick = () => { try { localStorage.setItem('collied_jamkey', kb.querySelector('#on-k').value.trim()); } catch (e) {} toast('Key saved'); }; };
-    q('#on-src').querySelectorAll('button').forEach(b => b.onclick = () => { srcK = b.dataset.v; q('#on-src').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); q('#on-res').innerHTML = ''; q('#on-st').textContent = ''; keyBox(); });
-    const dl = async (item, btn) => {
+      kb.querySelector('#on-ks').onclick = () => { try { localStorage.setItem('collied_jamkey', kb.querySelector('#on-k').value.trim()); } catch (e) {} toast('Key saved'); run(); }; };
+    q('#on-src').querySelectorAll('button').forEach(b => b.onclick = () => { srcK = b.dataset.v; q('#on-src').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); q('#on-res').innerHTML = ''; q('#on-st').textContent = ''; pvStop(); keyBox(); run(); });
+    const dl = async (list, btn) => {   // list = [{url,name}]
       if (busy) return; busy = true; btn.disabled = true; const st = q('#on-st'); const files = [];
       try {
-        const list = item.src === 'ia' ? await iaFiles(item.id, item.artist) : [{ url: item.url, name: item.name }];
-        if (!list.length) throw new Error('No audio file in this item');
+        if (!list.length) throw new Error('No audio file here');
         for (let i = 0; i < list.length; i++){ st.textContent = 'Downloading ' + (i + 1) + ' / ' + list.length + '…'; files.push(await fetchFile(list[i].url, list[i].name)); }
-        st.textContent = 'Adding to your library…'; await addFilesList(files); st.textContent = 'Done: ' + files.length + (files.length === 1 ? ' song added' : ' songs added'); btn.textContent = 'Added';
+        st.textContent = 'Adding to your library…'; await addFilesList(files); st.textContent = 'Done: ' + files.length + (files.length === 1 ? ' song added' : ' songs added'); btn.innerHTML = IC('check');
       } catch (e) { st.textContent = 'Failed: ' + (e && e.message || 'network or blocked'); btn.disabled = false; }
       busy = false;
     };
-    const go = async () => {
-      const text = q('#on-q').value.trim(); if (!text) return; const st = q('#on-st'), res = q('#on-res'); res.innerHTML = ''; st.textContent = 'Searching…';
-      try {
-        const items = srcK === 'ia' ? await iaSearch(text) : await jamSearch(text);
-        st.textContent = items.length ? items.length + ' found' : 'Nothing found';
-        items.forEach(it => { const row = document.createElement('div'); row.className = 'orow';
-          row.innerHTML = '<div class="ot"><b></b><span></span><small></small></div><button class="btn">Download</button>';
-          row.querySelector('b').textContent = it.title; row.querySelector('span').textContent = it.artist; row.querySelector('small').textContent = 'Licence: ' + String(it.lic).replace(/^https?:\/\/(www\.)?/, '');
-          row.querySelector('button').onclick = e => dl(it, e.target); res.appendChild(row); });
-      } catch (e) { st.textContent = e && e.message === 'key' ? 'Paste your Jamendo key first' : 'Search failed (offline or blocked)'; }
+    const mkBtn = (icon, label) => { const b = document.createElement('button'); b.className = 'obtn'; b.setAttribute('aria-label', label); b.innerHTML = IC(icon); return b; };
+    const row = (title, artist, lic, sub) => { const r = document.createElement('div'); r.className = 'orow'; const ot = document.createElement('div'); ot.className = 'ot'; ot.innerHTML = '<b></b><span></span><small></small>'; ot.querySelector('b').textContent = title; ot.querySelector('span').textContent = artist; ot.querySelector('small').textContent = lic; r.appendChild(ot); return r; };
+    const licTxt = l => 'Licence: ' + String(l).replace(/^https?:\/\/(www\.)?/, '');
+    const render = items => {
+      const res = q('#on-res'); res.innerHTML = '';
+      items.forEach(it => {
+        const wrap = document.createElement('div'); const r = row(it.title, it.artist, licTxt(it.lic)); const pb = mkBtn('play', 'Listen'), db = mkBtn('download', 'Download');
+        r.appendChild(pb); r.appendChild(db); wrap.appendChild(r);
+        if (it.src === 'jam'){ pb.onclick = () => pvToggle(it.play, pb); db.onclick = () => dl([it], db); }
+        else {
+          let tr = null, sub = null;
+          const load = async () => { if (tr) return tr; const st = q('#on-st'); st.textContent = 'Loading tracks…'; try { tr = await iaFiles(it.id, it.artist); st.textContent = tr.length ? tr.length + ' tracks' : 'No audio file in this item'; } catch (e) { st.textContent = 'Could not load tracks'; tr = []; } return tr; };
+          pb.onclick = async () => { const l = await load(); if (l[0]) pvToggle(l[0].url, pb); };
+          db.onclick = async () => { const l = await load(); dl(l, db); };
+          r.querySelector('.ot').onclick = async () => {
+            if (sub){ sub.remove(); sub = null; return; } const l = await load(); sub = document.createElement('div'); sub.className = 'osub';
+            l.forEach(t => { const rr = row(t.title, '', ''); rr.querySelector('span').remove(); rr.querySelector('small').remove(); const p2 = mkBtn('play', 'Listen'), d2 = mkBtn('download', 'Download'); p2.onclick = () => pvToggle(t.url, p2); d2.onclick = () => dl([t], d2); rr.appendChild(p2); rr.appendChild(d2); sub.appendChild(rr); });
+            wrap.appendChild(sub);
+          };
+        }
+        res.appendChild(wrap);
+      });
     };
-    q('#on-go').onclick = go; q('#on-q').onkeydown = e => { if (e.key === 'Enter') go(); };
+    const run = async () => {
+      const text = q('#on-q').value.trim(); const my = ++seq; if (text.length < 2){ q('#on-res').innerHTML = ''; q('#on-st').textContent = ''; return; }
+      q('#on-st').textContent = 'Searching…';
+      try {
+        let items = srcK === 'ia' ? await iaSearch(text) : await jamSearch(text); if (my !== seq) return;
+        items = items.map(x => Object.assign(x, { sc: simScore(text, x.title + ' ' + x.artist) })).sort((a, b) => b.sc - a.sc);
+        q('#on-st').textContent = items.length ? items.length + ' found' : 'Nothing found'; render(items);
+      } catch (e) { if (my === seq) q('#on-st').textContent = e && e.message === 'key' ? 'Paste your Jamendo key above, then type again' : 'Search failed (offline or blocked)'; }
+    };
+    q('#on-q').oninput = () => { clearTimeout(timer); timer = setTimeout(run, 400); }; q('#on-q').onkeydown = e => { if (e.key === 'Enter'){ clearTimeout(timer); run(); } };
   });
 }
-window.__online = { iaSearch, iaFiles, jamSearch };
+window.__online = { iaSearch, iaFiles, jamSearch, simScore };
 $('#onbtn').onclick = onlineSheet;
 
 // ================= backup import / export =================
