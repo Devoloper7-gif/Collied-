@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.9.1';
+const VERSION = 'v1.9.3';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -787,8 +787,9 @@ function probe(file){
   return new Promise(res => { const u = URL.createObjectURL(file), a = new Audio(); let done = false; const fin = d => { if (done) return; done = true; URL.revokeObjectURL(u); res(d); };
     a.preload = 'metadata'; a.onloadedmetadata = () => fin(isFinite(a.duration) ? a.duration : 0); a.onerror = () => fin(0); setTimeout(() => fin(0), 5000); a.src = u; });
 }
-$('#addfiles').addEventListener('change', async e => {
-  const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
+$('#addfiles').addEventListener('change', e => { const files = [...e.target.files]; e.target.value = ''; addFilesList(files); });
+async function addFilesList(files){
+  if (!files.length) return;
   const pg = $('#prog'); pg.hidden = false; let added = 0, matched = 0, covers = 0;
   for (let i = 0; i < files.length; i++){
     const f = files[i]; pg.textContent = 'Adding ' + (i + 1) + ' / ' + files.length + '…';
@@ -801,7 +802,74 @@ $('#addfiles').addEventListener('change', async e => {
   }
   await saveAuto(); pg.hidden = true; renderList(); toast('Added ' + added + (covers ? ' · ' + covers + ' covers' : '') + (matched ? ' · ' + matched + ' matched with Rhythm' : ''));
   if (prefs.auto) autoFill(false);
-});
+}
+
+// ================= v1.9.3 online search: only sources that allow free download =================
+// Internet Archive (items with a Creative Commons licence) and Jamendo (needs your own free key, kept only on this phone)
+const jamKey = () => { try { return localStorage.getItem('collied_jamkey') || ''; } catch (e) { return ''; } };
+const clean = x => String(x == null ? '' : x).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+async function fetchFile(url, name){
+  try { const r = await fetch(url); if (!r.ok) throw new Error(r.status); const b = await r.blob(); return new File([b], name, { type: b.type || 'audio/mpeg' }); }
+  catch (e) { const b = await netBlob(url); return new File([b], name, { type: b.type || 'audio/mpeg' }); }
+}
+async function iaSearch(q){
+  const e = encodeURIComponent(q.replace(/["\\]/g, ' '));
+  const url = 'https://archive.org/advancedsearch.php?q=' + encodeURIComponent('(title:(' + q.replace(/["\\]/g, ' ') + ') OR creator:(' + q.replace(/["\\]/g, ' ') + ')) AND mediatype:audio AND (licenseurl:* OR collection:netlabels)') + '&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=creator&fl%5B%5D=licenseurl&rows=25&sort%5B%5D=downloads+desc&output=json';
+  const r = await netJson(url); const d = r.json && r.json.response && r.json.response.docs || [];
+  return d.map(x => ({ src: 'ia', id: x.identifier, title: [].concat(x.title || x.identifier)[0], artist: [].concat(x.creator || '')[0] || 'Unknown', lic: x.licenseurl ? [].concat(x.licenseurl)[0] : 'Netlabel (check item page)', page: 'https://archive.org/details/' + x.identifier }));
+}
+async function iaFiles(id, artist){
+  const r = await netJson('https://archive.org/metadata/' + encodeURIComponent(id)); const fs = (r.json && r.json.files) || [];
+  const pick = ['VBR MP3', 'MP3', '128Kbps MP3', 'Ogg Vorbis', 'Flac']; let out = [];
+  for (const f of pick){ out = fs.filter(x => x.format === f); if (out.length) break; }
+  return out.slice(0, 40).map(f => ({ url: 'https://archive.org/download/' + encodeURIComponent(id) + '/' + f.name.split('/').map(encodeURIComponent).join('/'), name: clean(artist) + ' - ' + clean(f.title || f.name.replace(/\.[^.]+$/, '')) + (f.name.match(/\.[^.]+$/) || ['.mp3'])[0] }));
+}
+async function jamSearch(q){
+  const k = jamKey(); if (!k) throw new Error('key');
+  const r = await netJson('https://api.jamendo.com/v3.0/tracks/?client_id=' + encodeURIComponent(k) + '&format=json&limit=25&search=' + encodeURIComponent(q) + '&audiodownload_allowed=true&order=popularity_total');
+  const d = r.json && r.json.results || [];
+  return d.filter(x => x.audiodownload_allowed && x.audiodownload).map(x => ({ src: 'jam', id: x.id, title: x.name, artist: x.artist_name, lic: x.license_ccurl || 'Creative Commons', page: x.shareurl, url: x.audiodownload, name: clean(x.artist_name) + ' - ' + clean(x.name) + '.mp3' }));
+}
+function onlineSheet(){
+  let srcK = 'ia', busy = false;
+  sheet(box => {
+    box.appendChild(Object.assign(document.createElement('h3'), { textContent: 'Find music online' }));
+    const w = document.createElement('div'); w.innerHTML =
+      '<div class="pre" id="on-src"><button data-v="ia" class="on">Internet Archive</button><button data-v="jam">Jamendo</button></div>' +
+      '<div class="bar" style="margin-top:10px"><input id="on-q" type="search" placeholder="Song or artist"><button class="btn pri" id="on-go">Search</button></div>' +
+      '<div id="on-key" class="note" hidden></div><div id="on-st" class="note"></div><div id="on-res"></div>' +
+      '<p class="note">Only music that is free to download is listed: Creative Commons and similar. You are responsible for following each licence (many need you to credit the artist). Popular commercial songs are not here.</p>';
+    box.appendChild(w); const q = x => w.querySelector(x);
+    const keyBox = () => { const kb = q('#on-key'); if (srcK !== 'jam'){ kb.hidden = true; return; } kb.hidden = false;
+      kb.innerHTML = 'Jamendo needs your own free key (client id). Get one at <b>devportal.jamendo.com</b>, paste it here. It stays on this phone only.<div class="bar" style="margin-top:8px"><input id="on-k" type="text" placeholder="client id" value="' + jamKey().replace(/"/g, '') + '"><button class="btn" id="on-ks">Save</button></div>';
+      kb.querySelector('#on-ks').onclick = () => { try { localStorage.setItem('collied_jamkey', kb.querySelector('#on-k').value.trim()); } catch (e) {} toast('Key saved'); }; };
+    q('#on-src').querySelectorAll('button').forEach(b => b.onclick = () => { srcK = b.dataset.v; q('#on-src').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); q('#on-res').innerHTML = ''; q('#on-st').textContent = ''; keyBox(); });
+    const dl = async (item, btn) => {
+      if (busy) return; busy = true; btn.disabled = true; const st = q('#on-st'); const files = [];
+      try {
+        const list = item.src === 'ia' ? await iaFiles(item.id, item.artist) : [{ url: item.url, name: item.name }];
+        if (!list.length) throw new Error('No audio file in this item');
+        for (let i = 0; i < list.length; i++){ st.textContent = 'Downloading ' + (i + 1) + ' / ' + list.length + '…'; files.push(await fetchFile(list[i].url, list[i].name)); }
+        st.textContent = 'Adding to your library…'; await addFilesList(files); st.textContent = 'Done: ' + files.length + (files.length === 1 ? ' song added' : ' songs added'); btn.textContent = 'Added';
+      } catch (e) { st.textContent = 'Failed: ' + (e && e.message || 'network or blocked'); btn.disabled = false; }
+      busy = false;
+    };
+    const go = async () => {
+      const text = q('#on-q').value.trim(); if (!text) return; const st = q('#on-st'), res = q('#on-res'); res.innerHTML = ''; st.textContent = 'Searching…';
+      try {
+        const items = srcK === 'ia' ? await iaSearch(text) : await jamSearch(text);
+        st.textContent = items.length ? items.length + ' found' : 'Nothing found';
+        items.forEach(it => { const row = document.createElement('div'); row.className = 'orow';
+          row.innerHTML = '<div class="ot"><b></b><span></span><small></small></div><button class="btn">Download</button>';
+          row.querySelector('b').textContent = it.title; row.querySelector('span').textContent = it.artist; row.querySelector('small').textContent = 'Licence: ' + String(it.lic).replace(/^https?:\/\/(www\.)?/, '');
+          row.querySelector('button').onclick = e => dl(it, e.target); res.appendChild(row); });
+      } catch (e) { st.textContent = e && e.message === 'key' ? 'Paste your Jamendo key first' : 'Search failed (offline or blocked)'; }
+    };
+    q('#on-go').onclick = go; q('#on-q').onkeydown = e => { if (e.key === 'Enter') go(); };
+  });
+}
+window.__online = { iaSearch, iaFiles, jamSearch };
+$('#onbtn').onclick = onlineSheet;
 
 // ================= backup import / export =================
 async function importBackup(file){
@@ -915,11 +983,10 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   const lpPaint = () => { const t = queue[qi]; if (!lpOpen || !t) return; $('#lp-t').textContent = t.title || ''; $('#lp-a').textContent = t.artist || ''; $('#lp-bg').style.backgroundImage = (lpPic && t.art) ? 'url("' + t.art + '")' : ''; };
   window.__lpPaint = lpPaint;
   let lpPt = [innerWidth / 2, innerHeight / 2];
-  const lpReveal = (open, done) => {
-    const x = lpPt[0], y = lpPt[1], R = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) + 20;
+  const lpReveal = (open, done) => {   // the page slides down from the top and goes back up
     if (noAnim() || !lpage.animate){ done && done(); return; }
-    const a = ['circle(0px at ' + x + 'px ' + y + 'px)', 'circle(' + R + 'px at ' + x + 'px ' + y + 'px)'];
-    const an = lpage.animate({ clipPath: open ? a : a.slice().reverse() }, { duration: open ? 460 : 320, easing: open ? 'cubic-bezier(.22,1,.36,1)' : 'cubic-bezier(.4,0,.8,.4)', fill: 'both' });
+    const a = ['translate3d(0,-100%,0)', 'translate3d(0,0,0)'];
+    const an = lpage.animate({ transform: open ? a : a.slice().reverse() }, { duration: open ? 420 : 320, easing: open ? 'cubic-bezier(.22,1,.36,1)' : 'cubic-bezier(.4,0,.8,.4)', fill: 'both' });
     an.onfinish = () => { try { an.cancel(); } catch (e) {} done && done(); };
   };
   function openLpage(x, y){
@@ -1036,8 +1103,8 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     an.getByteFrequencyData(fb);
     const t = [avg(1, 7) * 1.5, avg(7, 28) * 1.9, avg(28, 90) * 3.4];
     const [at, rl] = SPD[cfg.sp] || SPD.normal; let sum = 0;
-    for (let i = 0; i < 3; i++){ const v = Math.min(1, t[i]); lv[i] += (v - lv[i]) * (v > lv[i] ? at : rl); sum += lv[i]; const tf = 'scaleY(' + (lv[i] * cfg.h / 100).toFixed(3) + ')'; if (on){ gs[0].children[i].style.transform = tf; gs[1].children[i].style.transform = tf; } if (lyrOn) gs[2].children[i].style.transform = tf; }
-    { const lo = !$('#lpage').hidden, fo = !$('#full').hidden && !lo; gs[0].classList.toggle('on', on && !fo && !lo); gs[1].classList.toggle('on', on && fo); gs[2].classList.toggle('on', lyrOn && lo); }
+    for (let i = 0; i < 3; i++){ const v = Math.min(1, t[i]); lv[i] += (v - lv[i]) * (v > lv[i] ? at : rl); sum += lv[i]; const tf = 'scaleY(' + (lv[i] * cfg.h / 100).toFixed(3) + ')'; if (on){ gs[0].children[i].style.transform = tf; gs[1].children[i].style.transform = tf; if (lyrOn) gs[2].children[i].style.transform = tf; } }
+    { const lo = !$('#lpage').hidden, fo = !$('#full').hidden && !lo; gs[0].classList.toggle('on', on && !fo && !lo); gs[1].classList.toggle('on', on && fo); gs[2].classList.toggle('on', on && lyrOn && lo); }
     all = sum / 3; lyrE.style.setProperty('--ll', (lyrOn && !$('#full').hidden && ($('#full').classList.contains('lyr-on') || !$('#lpage').hidden)) ? Math.min(1, all * 1.6).toFixed(2) : '0');   // lyrics glow follows the music
   }
   function stop(){ if (raf){ cancelAnimationFrame(raf); raf = 0; } gs.forEach(x => x.classList.remove('on')); lv = [0, 0, 0]; lyrE.style.setProperty('--ll', '0'); setTimeout(() => { if (!raf) gs.forEach(x => [...x.children].forEach(b => { b.style.transform = 'scaleY(0)'; })); }, 520); }

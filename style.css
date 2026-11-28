@@ -259,7 +259,7 @@ header#top.away{transform:translate3d(0,-110%,0);opacity:0}
 #nav button{min-width:0}
 #full.closing{animation:fdown .26s cubic-bezier(.4,0,.8,.4) forwards!important}
 @keyframes fdown{to{transform:translateY(100%)}}
-#lpage{position:fixed;inset:0;z-index:25;background:#000;display:flex;flex-direction:column;padding:calc(10px + env(safe-area-inset-top)) 18px calc(14px + env(safe-area-inset-bottom));will-change:clip-path}
+#lpage{position:fixed;inset:0;z-index:25;background:#000;display:flex;flex-direction:column;padding:calc(10px + env(safe-area-inset-top)) 18px calc(14px + env(safe-area-inset-bottom));will-change:transform}
 #lpage[hidden]{display:none}
 .lp-top{display:flex;align-items:center;gap:6px}#lp-back{background:none;border:0;padding:6px 8px 6px 0}#lp-back .i{width:28px;height:28px}
 .lp-ti{display:flex;flex-direction:column;min-width:0}.lp-ti b{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lp-ti span{color:var(--mu);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -296,3 +296,9 @@ html.noanim #lpage.black #lyr p{animation:none}
 #lpage.black #lyr p.on{text-shadow:0 0 calc(12px + var(--ll,0) * 36px) rgba(255,255,255,calc(.3 + var(--ll,0) * .5)),0 0 calc(24px + var(--ll,0) * 50px) color-mix(in srgb,var(--ac) calc(15% + var(--ll,0) * 50%),transparent)}
 #full{will-change:transform;backface-visibility:hidden;contain:layout paint}
 #full>*{animation-duration:.4s}
+#lpage>.glow{top:auto!important;bottom:0;height:52%!important;opacity:.85}
+
+/* v1.9.3 online */
+.orow{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.07)}
+.orow .ot{flex:1;min-width:0;display:flex;flex-direction:column}.orow b{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.orow span{color:var(--mu);font-size:13px}.orow small{color:var(--mu);font-size:11px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#on-res{max-height:46vh;overflow:auto;margin-top:6px}
