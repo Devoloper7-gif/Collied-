@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.9.4';
+const VERSION = 'v1.9.5';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -1234,6 +1234,9 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   $('#f-shuf').addEventListener('click', () => setTimeout(push, 30));
   $('#f-rep').addEventListener('click', () => setTimeout(push, 30));
   try {
+    { const hs = $('#hpsw'); let on = false; try { on = localStorage.getItem('collied_hp') === 'on'; } catch (x) {} hs.checked = on;
+      const send = () => { try { MC.hp({ on: hs.checked }); } catch (x) {} };
+      hs.onchange = () => { try { localStorage.setItem('collied_hp', hs.checked ? 'on' : 'off'); } catch (x) {} send(); }; send(); }
     setTimeout(() => { try { MC.pending().then(r => { if (r && r.play) setTimeout(() => { if (audio.paused) toggle(); }, 600); }).catch(() => {}); } catch (x) {} }, 1400);   // play was pressed in the notification while the app was closed
     MC.addListener('action', e => {
       lastAct = (e && e.name) || ''; lastAt = Date.now();
