@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = 'v1.9';
+const VERSION = 'v1.9.1';
 const $ = (s, r) => (r || document).querySelector(s);
 const IC = n => '<svg class="i" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const esc = t => String(t == null ? '' : t);
@@ -914,10 +914,21 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   const bars = hide => { try { const SB = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.SystemBars; if (SB) (hide ? SB.hide() : SB.show()); } catch (e) {} try { if (hide){ if (!document.fullscreenElement && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {}); } else if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {}); } catch (e) {} };
   const lpPaint = () => { const t = queue[qi]; if (!lpOpen || !t) return; $('#lp-t').textContent = t.title || ''; $('#lp-a').textContent = t.artist || ''; $('#lp-bg').style.backgroundImage = (lpPic && t.art) ? 'url("' + t.art + '")' : ''; };
   window.__lpPaint = lpPaint;
-  function openLpage(){
-    if (lpOpen) return; lpOpen = true; lpage.hidden = false; lpage.classList.toggle('black', !lpPic); lpPaint(); if (!lpPic) bars(true); $('#lp-t').textContent = (queue[qi] && queue[qi].title) || ''; $('#lp-a').textContent = (queue[qi] && queue[qi].artist) || '';
+  let lpPt = [innerWidth / 2, innerHeight / 2];
+  const lpReveal = (open, done) => {
+    const x = lpPt[0], y = lpPt[1], R = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) + 20;
+    if (noAnim() || !lpage.animate){ done && done(); return; }
+    const a = ['circle(0px at ' + x + 'px ' + y + 'px)', 'circle(' + R + 'px at ' + x + 'px ' + y + 'px)'];
+    const an = lpage.animate({ clipPath: open ? a : a.slice().reverse() }, { duration: open ? 460 : 320, easing: open ? 'cubic-bezier(.22,1,.36,1)' : 'cubic-bezier(.4,0,.8,.4)', fill: 'both' });
+    an.onfinish = () => { try { an.cancel(); } catch (e) {} done && done(); };
+  };
+  function openLpage(x, y){
+    if (lpOpen) return; lpOpen = true; lpPt = (typeof x === 'number') ? [x, y] : [innerWidth / 2, innerHeight / 2];
+    lpage.hidden = false; lpage.classList.toggle('black', !lpPic); lpage.classList.remove('enter'); void lpage.offsetWidth; lpage.classList.add('enter'); lpPaint(); bars(true);
+    $('#lp-t').textContent = (queue[qi] && queue[qi].title) || ''; $('#lp-a').textContent = (queue[qi] && queue[qi].artist) || '';
     lpage.querySelector('.lp-body').appendChild(lyrEl); lyrEl.style.touchAction = 'pan-y'; lyrEl.classList.add('inpage');
-    pushUI(() => { lpOpen = false; if (!lpPic) bars(false); home.appendChild(lyrEl); lyrEl.classList.remove('inpage'); lpage.hidden = true; setTimeout(() => lyrTick(true), 60); });
+    lpReveal(true);
+    pushUI(() => { lpOpen = false; bars(false); lpReveal(false, () => { if (lpOpen) return; home.appendChild(lyrEl); lyrEl.classList.remove('inpage'); lpage.hidden = true; setTimeout(() => lyrTick(true), 60); }); });
     setTimeout(() => lyrTick(true), 80);
   }
   $('#lp-back').onclick = () => popUI();
@@ -949,7 +960,7 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     taps++; clearTimeout(tapT);
     if (taps >= 2){ taps = 0; toggle(); const a = $('#f-art'); a.classList.remove('dtap'); void a.offsetWidth; a.classList.add('dtap'); return; }
     const onLine = lyrShown && !!t0.line;
-    tapT = setTimeout(() => { taps = 0; if (onLine) openLpage(); else $('#f-lyr').click(); }, 260);
+    tapT = setTimeout(() => { taps = 0; if (onLine) openLpage(t0.x, t0.y); else $('#f-lyr').click(); }, 260);
   };
   stage.addEventListener('pointerup', endTap); stage.addEventListener('pointercancel', () => { tap = null; clearTimeout(lp); });
   function swipeSong(dir){
@@ -1025,8 +1036,8 @@ document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
     an.getByteFrequencyData(fb);
     const t = [avg(1, 7) * 1.5, avg(7, 28) * 1.9, avg(28, 90) * 3.4];
     const [at, rl] = SPD[cfg.sp] || SPD.normal; let sum = 0;
-    for (let i = 0; i < 3; i++){ const v = Math.min(1, t[i]); lv[i] += (v - lv[i]) * (v > lv[i] ? at : rl); sum += lv[i]; if (on){ const tf = 'scaleY(' + (lv[i] * cfg.h / 100).toFixed(3) + ')'; gs[0].children[i].style.transform = tf; gs[1].children[i].style.transform = tf; gs[2].children[i].style.transform = tf; } }
-    if (on){ const lo = !$('#lpage').hidden, fo = !$('#full').hidden && !lo; gs[0].classList.toggle('on', !fo && !lo); gs[1].classList.toggle('on', fo); gs[2].classList.toggle('on', lo); } else gs.forEach(x => x.classList.remove('on'));
+    for (let i = 0; i < 3; i++){ const v = Math.min(1, t[i]); lv[i] += (v - lv[i]) * (v > lv[i] ? at : rl); sum += lv[i]; const tf = 'scaleY(' + (lv[i] * cfg.h / 100).toFixed(3) + ')'; if (on){ gs[0].children[i].style.transform = tf; gs[1].children[i].style.transform = tf; } if (lyrOn) gs[2].children[i].style.transform = tf; }
+    { const lo = !$('#lpage').hidden, fo = !$('#full').hidden && !lo; gs[0].classList.toggle('on', on && !fo && !lo); gs[1].classList.toggle('on', on && fo); gs[2].classList.toggle('on', lyrOn && lo); }
     all = sum / 3; lyrE.style.setProperty('--ll', (lyrOn && !$('#full').hidden && ($('#full').classList.contains('lyr-on') || !$('#lpage').hidden)) ? Math.min(1, all * 1.6).toFixed(2) : '0');   // lyrics glow follows the music
   }
   function stop(){ if (raf){ cancelAnimationFrame(raf); raf = 0; } gs.forEach(x => x.classList.remove('on')); lv = [0, 0, 0]; lyrE.style.setProperty('--ll', '0'); setTimeout(() => { if (!raf) gs.forEach(x => [...x.children].forEach(b => { b.style.transform = 'scaleY(0)'; })); }, 520); }

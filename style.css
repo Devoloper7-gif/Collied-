@@ -259,7 +259,7 @@ header#top.away{transform:translate3d(0,-110%,0);opacity:0}
 #nav button{min-width:0}
 #full.closing{animation:fdown .26s cubic-bezier(.4,0,.8,.4) forwards!important}
 @keyframes fdown{to{transform:translateY(100%)}}
-#lpage{position:fixed;inset:0;z-index:25;background:#000;display:flex;flex-direction:column;padding:calc(10px + env(safe-area-inset-top)) 18px calc(14px + env(safe-area-inset-bottom));animation:fup .32s var(--ease)}
+#lpage{position:fixed;inset:0;z-index:25;background:#000;display:flex;flex-direction:column;padding:calc(10px + env(safe-area-inset-top)) 18px calc(14px + env(safe-area-inset-bottom));will-change:clip-path}
 #lpage[hidden]{display:none}
 .lp-top{display:flex;align-items:center;gap:6px}#lp-back{background:none;border:0;padding:6px 8px 6px 0}#lp-back .i{width:28px;height:28px}
 .lp-ti{display:flex;flex-direction:column;min-width:0}.lp-ti b{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lp-ti span{color:var(--mu);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -285,3 +285,14 @@ body.reveal header#top,body.reveal main,body.reveal #nav,body.reveal #mini{anima
 #lpage.black #lyr p.on{transform:scale(1.06)}
 html.noanim #lpage.black #lyr p{animation:none}
 #lpage.black #lyr p.on{animation:none}
+
+/* v1.9c lyrics page motion + smoother big player */
+#lpage.enter .lp-top{animation:lpTop .6s .12s var(--ease) both}
+#lpage.enter #lyr{animation:lyrIn .8s .1s var(--ease) both}
+@keyframes lpTop{from{opacity:0;transform:translateY(-14px)}to{opacity:1;transform:none}}
+@keyframes lyrIn{from{opacity:0;transform:translateY(34px) scale(.97)}to{opacity:1;transform:none}}
+#lpage #lyr p{transition:color .5s,transform .6s var(--ease),opacity .5s,text-shadow .3s}
+#lpage #lyr p.on{text-shadow:0 0 calc(10px + var(--ll,0) * 34px) color-mix(in srgb,var(--ac) calc(30% + var(--ll,0) * 65%),transparent)}
+#lpage.black #lyr p.on{text-shadow:0 0 calc(12px + var(--ll,0) * 36px) rgba(255,255,255,calc(.3 + var(--ll,0) * .5)),0 0 calc(24px + var(--ll,0) * 50px) color-mix(in srgb,var(--ac) calc(15% + var(--ll,0) * 50%),transparent)}
+#full{will-change:transform;backface-visibility:hidden;contain:layout paint}
+#full>*{animation-duration:.4s}
